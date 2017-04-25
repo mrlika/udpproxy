@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <boost/asio/system_timer.hpp>
 
 #include <iostream>
 #include <experimental/string_view>
@@ -8,6 +9,10 @@
 namespace UdpProxy {
 
 using boost::asio::ip::tcp;
+using namespace std::chrono_literals;
+
+constexpr static size_t MAX_HEADER_SIZE = 4 * 1024;
+constexpr static boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
 public:
@@ -22,6 +27,20 @@ private:
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
     typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
 
+    void startAccept() {
+        auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
+
+        acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
+            if (!e) {
+                HttpHeaderReader::read(socket);
+            } else {
+                std::cout << e.message() << std::endl;
+            }
+
+            startAccept();
+        });
+    }
+
     class HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
     public:
         static void read(std::shared_ptr<tcp::socket> &socket) {
@@ -32,9 +51,14 @@ private:
         void validateHttpMethod() {
             constexpr static std::experimental::string_view REQUEST_METHOD_STRING("GET ", 4);
 
+            timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
+            timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &/*e*/) {
+                socket->cancel();
+            });
+
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD_STRING, REQUEST_METHOD_STRING.size())),
-                [this, capture = shared_from_this()] (const boost::system::error_code& e, size_t size) {
+                [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
                         std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD_STRING.size());
                         if (method == REQUEST_METHOD_STRING) {
@@ -55,7 +79,7 @@ private:
 
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_LINE_ENDING, MAX_HEADER_SIZE - bytesRead)),
-                [this, capture = shared_from_this()] (const boost::system::error_code& e, size_t size) {
+                [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
                         uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - REQUEST_LINE_ENDING.size()};
                         std::cout << "URI: '" << uri << '\'' << std::endl;
@@ -71,7 +95,9 @@ private:
         void readRestOfHttpHeader() {
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize("\r\n\r\n", MAX_HEADER_SIZE - bytesRead)),
-                [capture = shared_from_this()] (const boost::system::error_code& e, size_t /*size*/) {
+                [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t /*size*/) {
+                    timeoutTimer.cancel();
+
                     if (!e) {
                         std::cout << "Done read header" << std::endl;
                     } else {
@@ -81,29 +107,14 @@ private:
         }
 
     private:
-        constexpr static size_t MAX_HEADER_SIZE = 4 * 1024;
-
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket) : socket(socket) {}
+        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket) : socket(socket), timeoutTimer(socket->get_io_service()) {}
 
         std::shared_ptr<tcp::socket> socket;
         boost::asio::streambuf buffer{MAX_HEADER_SIZE};
         size_t bytesRead = 0;
         std::string uri;
+        boost::asio::system_timer timeoutTimer;
     };
-
-    void startAccept() {
-        auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
-
-        acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
-            if (!e) {
-                HttpHeaderReader::read(socket);
-            } else {
-                std::cout << e.message() << std::endl;
-            }
-
-            startAccept();
-        });
-    }
 
     class MatchStringOrSize {
     public:
