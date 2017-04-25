@@ -3,9 +3,9 @@
 int main() {
     try {
         boost::asio::io_service ioService;
-        UdpProxy::HttpServer server(ioService);
+        UdpProxy::Server server(ioService);
         ioService.run();
-    } catch (std::exception &e) {
+    } catch (const std::exception &e) {
         std::cerr << e.what() << std::endl;
         return 1;
     }
