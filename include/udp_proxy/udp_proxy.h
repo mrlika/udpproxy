@@ -4,6 +4,7 @@
 #include <boost/asio/system_timer.hpp>
 
 #include <iostream>
+#include <regex>
 #include <experimental/string_view>
 
 namespace UdpProxy {
@@ -83,8 +84,30 @@ private:
                 UntilFunction(MatchStringOrSize(REQUEST_LINE_ENDING, MAX_HEADER_SIZE - bytesRead)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
-                        uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - REQUEST_LINE_ENDING.size()};
-                        std::cout << "URI: '" << uri << '\'' << std::endl;
+                        std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - REQUEST_LINE_ENDING.size()};
+
+                        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})", std::regex_constants::optimize);
+                        std::cmatch match;
+                        std::regex_match(uri.begin(), uri.end(), match, uriRegex);
+
+                        if (match.empty()) {
+                            std::cout << "error: wrong URI" << std::endl;
+                            return;
+                        }
+
+                        try {
+                            unsigned long portParsed = std::stoul(match[2]);
+                            address = boost::asio::ip::address::from_string(match[1]);
+                            if ((portParsed == 0) || (portParsed > std::numeric_limits<unsigned short>::max())) {
+                                std::cout << "error: wrong port in URI" << std::endl;
+                                return;
+                            }
+                            port = portParsed;
+                        } catch (...) {
+                            std::cout << "error: wrong URI" << std::endl;
+                            return;
+                        }
+
                         buffer.consume(size - 2); // Do not consume CRLF
                         bytesRead += (size - 2);
                         readRestOfHttpHeader();
@@ -114,8 +137,10 @@ private:
         std::shared_ptr<tcp::socket> socket;
         boost::asio::streambuf buffer{MAX_HEADER_SIZE};
         size_t bytesRead = 0;
-        std::string uri;
         boost::asio::system_timer timeoutTimer;
+
+        boost::asio::ip::address address;
+        unsigned short port;
     };
 
     class MatchStringOrSize {
