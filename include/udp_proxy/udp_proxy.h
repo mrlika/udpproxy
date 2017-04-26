@@ -24,6 +24,12 @@ public:
     }
 
 private:
+    class ServerError : public std::runtime_error {
+    public:
+        explicit ServerError(const std::string& message) : std::runtime_error(message) {}
+        explicit ServerError(const char *message) : std::runtime_error(message) {}
+    };
+
     tcp::acceptor acceptor;
 
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
@@ -63,17 +69,22 @@ private:
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
-                    if (!e) {
-                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD.length());
-                        if (REQUEST_METHOD == method) {
-                            buffer.consume(size);
-                            bytesRead += size;
-                            readHttpRequestUri();
-                        } else {
-                            std::cout << "error: method not supported" << std::endl;
+                    try {
+                        if (e) {
+                            throw ServerError(e.message());
                         }
-                    } else {
-                        std::cout << "error: " << e.message() << std::endl;
+
+                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD.length());
+                        if (REQUEST_METHOD != method) {
+                            throw ServerError("method not supported");
+                        }
+
+                        buffer.consume(size);
+                        bytesRead += size;
+                        readHttpRequestUri();
+                    } catch (const ServerError &e) {
+                        std::cout << "error: " << e.what() << std::endl;
+                        timeoutTimer.cancel();
                     }
                 });
         }
@@ -86,16 +97,16 @@ private:
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize("\r\n", MAX_REQUEST_LINE_SIZE)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
-                    if (!e) {
-                        if (size < MIN_REQUEST_LINE_SIZE) {
-                            std::cout << "error: request not supported" << std::endl;
-                            return;
+                    try {
+                        if (e) {
+                            throw ServerError(e.message());
+                        } else if (size < MIN_REQUEST_LINE_SIZE) {
+                            throw ServerError("request not supported");
                         }
 
                         std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer.data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
                         if (HTTP_VERSION_ENDING != ending) {
-                            std::cout << "error: request not supported" << std::endl;
-                            return;
+                            throw ServerError("request not supported");
                         }
 
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
@@ -105,28 +116,30 @@ private:
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
 
                         if (match.empty()) {
-                            std::cout << "error: wrong URI" << std::endl;
-                            return;
+                            throw ServerError("wrong URI");
                         }
 
+                        unsigned long portParsed;
+
                         try {
-                            unsigned long portParsed = std::stoul(match[2]);
+                            portParsed = std::stoul(match[2]);
                             address = boost::asio::ip::address::from_string(match[1]);
-                            if ((portParsed == 0) || (portParsed > std::numeric_limits<unsigned short>::max())) {
-                                std::cout << "error: wrong port in URI" << std::endl;
-                                return;
-                            }
-                            port = portParsed;
                         } catch (...) {
-                            std::cout << "error: wrong URI" << std::endl;
-                            return;
+                            throw ServerError("wrong URI");
                         }
+
+                        if ((portParsed == 0) || (portParsed > std::numeric_limits<unsigned short>::max())) {
+                            throw ServerError("wrong URI");
+                        }
+
+                        port = portParsed;
 
                         buffer.consume(size - 2); // Do not consume CRLF
                         bytesRead += (size - 2);
                         readRestOfHttpHeader();
-                    } else {
-                        std::cout << "error: " << e.message() << std::endl;
+                    } catch (const ServerError &e) {
+                        std::cout << "error: " << e.what() << std::endl;
+                        timeoutTimer.cancel();
                     }
                 });
         }
@@ -137,11 +150,12 @@ private:
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t /*size*/) {
                     timeoutTimer.cancel();
 
-                    if (!e) {
-                        std::cout << "Done read header" << std::endl;
-                    } else {
+                    if (e) {
                         std::cout << "error: " << e.message() << std::endl;
+                        return;
                     }
+
+                    std::cout << "Done read header: " + address.to_string() + ":" + std::to_string(port) << std::endl;
                 });
         }
 
