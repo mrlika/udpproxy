@@ -52,8 +52,10 @@ private:
             constexpr static std::experimental::string_view REQUEST_METHOD_STRING("GET ", 4);
 
             timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
-            timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &/*e*/) {
-                socket->cancel();
+            timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &e) {
+                if (e != boost::system::errc::operation_canceled) {
+                    socket->cancel();
+                }
             });
 
             boost::asio::async_read_until(*socket, buffer,
@@ -61,7 +63,7 @@ private:
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
                         std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD_STRING.size());
-                        if (method == REQUEST_METHOD_STRING) {
+                        if (REQUEST_METHOD_STRING == method) {
                             buffer.consume(size);
                             bytesRead += size;
                             readHttpRequestUri();
