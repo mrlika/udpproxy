@@ -5,21 +5,25 @@
 
 #include <iostream>
 #include <regex>
+#include <unordered_map>
+#include <list>
 #include <experimental/string_view>
 
 namespace UdpProxy {
 
 using boost::asio::ip::tcp;
+using boost::asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
+static constexpr size_t UDP_DATAGRAM_MAX_SIZE = 4 * 1024;
 static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
 public:
-    Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint) {
+    Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) :
+            acceptor(ioService, endpoint), udpServer(ioService) {
         startAccept();
     }
 
@@ -33,14 +37,12 @@ private:
         explicit ServerError(const char *message) : std::runtime_error(message) {}
     };
 
-    tcp::acceptor acceptor;
-
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
 
         acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
             if (!e) {
-                HttpHeaderReader::read(socket);
+                HttpHeaderReader::read(socket, udpServer);
             } else {
                 std::cout << e.message() << std::endl;
             }
@@ -49,14 +51,90 @@ private:
         });
     }
 
+    class UdpServer {
+    public:
+        UdpServer(boost::asio::io_service &ioService) noexcept: ioService(ioService) {}
+
+        void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &httpSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
+            std::cout << "addUdpToHttpReceiver " << udpEndpoint.address().to_string() + ":" + std::to_string(udpEndpoint.port()) << std::endl;
+            uint64_t inputId = (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
+
+            auto udpInputIterator = udpInputs.find(inputId);
+            UdpInput *udpInput;
+
+            if (udpInputIterator == udpInputs.end()) {
+                // TODO: do not fail if can't bind to endpoint
+                auto udpInputUnique = std::make_unique<UdpInput>(ioService, udpEndpoint);
+                udpInput = udpInputUnique.get();
+                udpInputs.emplace(inputId, std::move(udpInputUnique));
+            } else {
+                udpInput = udpInputIterator->second.get();
+            }
+
+            udpInput->receiverSockets.emplace_back(httpSocket);
+
+            // TODO: clean finished inputs/sockets
+        }
+
+    private:
+        struct UdpInput {
+            UdpInput(boost::asio::io_service &ioService, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpSocket(ioService, udpEndpoint) {
+                udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
+                if (udpEndpoint.address().is_multicast()) {
+                    udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
+                }
+
+                receiveUdp();
+            }
+
+            void receiveUdp() {
+                buffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
+
+                udpSocket.async_receive_from(boost::asio::buffer(buffer->data(), buffer->size()), senderEndpoint, [this](const boost::system::error_code &e, std::size_t bytesRead) {
+                    if (e) {
+                        std::cout << "error: " << e.message() << std::endl;
+                        buffer.reset();
+                    } else {
+                        std::cout << "bytes read: " << bytesRead << std::endl;
+
+                        for (std::shared_ptr<tcp::socket>& receiverSocket : receiverSockets) {
+                            // TODO: write HTTP header first
+                            boost::asio::async_write(*receiverSocket, boost::asio::buffer(buffer->data(), bytesRead), [this, capture = buffer](const boost::system::error_code &e, std::size_t bytesSent) {
+                                if (e) {
+                                    std::cout << "error: " << e.message() << std::endl;
+                                } else {
+                                    std::cout << "bytes sent: " << bytesSent << std::endl;
+                                }
+                            });
+                        }
+
+                        receiveUdp();
+                    }
+                });
+            }
+
+            std::list<std::shared_ptr<tcp::socket>> receiverSockets;
+            udp::socket udpSocket;
+            udp::endpoint senderEndpoint;
+            std::shared_ptr<std::vector<uint8_t>> buffer;
+        };
+
+        std::unordered_map<uint32_t, std::unique_ptr<UdpInput>> udpInputs;
+        boost::asio::io_service &ioService;
+    };
+
     class HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
     public:
-        static void read(std::shared_ptr<tcp::socket> &socket) {
-            auto reader = std::make_shared<HttpHeaderReader>(socket);
+        static void read(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer) {
+            auto reader = std::make_shared<HttpHeaderReader>(socket, udpServer);
             reader->validateHttpMethod();
         }
 
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket) : socket(socket), timeoutTimer(socket->get_io_service()) {}
+        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer) :
+                socket(socket),
+                timeoutTimer(socket->get_io_service()),
+                udpServer(udpServer) {
+        }
 
     private:
         void validateHttpMethod() {
@@ -123,20 +201,21 @@ private:
                             throw ServerError("wrong URI");
                         }
 
-                        unsigned long portParsed;
+                        boost::asio::ip::address address;
+                        unsigned long port;
 
                         try {
-                            portParsed = std::stoul(match[2]);
+                            port = std::stoul(match[2]);
                             address = boost::asio::ip::address::from_string(match[1]);
                         } catch (...) {
                             throw ServerError("wrong URI");
                         }
 
-                        if ((portParsed == 0) || (portParsed > std::numeric_limits<unsigned short>::max())) {
+                        if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
                             throw ServerError("wrong URI");
                         }
 
-                        port = portParsed;
+                        udpEndpoint = {address, static_cast<unsigned short>(port)};
 
                         buffer.consume(size - 2); // Do not consume CRLF
                         bytesRead += (size - 2);
@@ -159,7 +238,7 @@ private:
                         return;
                     }
 
-                    std::cout << "Done read header: " + address.to_string() + ":" + std::to_string(port) << std::endl;
+                    udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
                 });
         }
 
@@ -167,9 +246,9 @@ private:
         boost::asio::streambuf buffer{MAX_HEADER_SIZE};
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
+        UdpServer &udpServer;
 
-        boost::asio::ip::address address;
-        unsigned short port;
+        boost::asio::ip::udp::endpoint udpEndpoint;
     };
 
     class MatchStringOrSize {
@@ -204,6 +283,9 @@ private:
         size_t sizeLimit;
         size_t bytesRead = 0;
     };
+
+    tcp::acceptor acceptor;
+    UdpServer udpServer;
 };
 
 }
