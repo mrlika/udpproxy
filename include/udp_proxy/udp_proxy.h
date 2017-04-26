@@ -11,6 +11,7 @@ namespace UdpProxy {
 
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
+using namespace std::experimental::string_view_literals;
 
 constexpr static size_t MAX_HEADER_SIZE = 4 * 1024;
 constexpr static boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
@@ -50,7 +51,7 @@ private:
         }
 
         void validateHttpMethod() {
-            constexpr static std::experimental::string_view REQUEST_METHOD_STRING("GET ", 4);
+            constexpr static std::experimental::string_view REQUEST_METHOD_STRING = "GET "sv;
 
             timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
             timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &e) {
@@ -78,7 +79,7 @@ private:
         }
 
         void readHttpRequestUri() {
-            constexpr static std::experimental::string_view REQUEST_LINE_ENDING(" HTTP/1.1\r\n", 11);
+            constexpr static std::experimental::string_view REQUEST_LINE_ENDING = " HTTP/1.1\r\n"sv;
 
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_LINE_ENDING, MAX_HEADER_SIZE - bytesRead)),
@@ -119,7 +120,7 @@ private:
 
         void readRestOfHttpHeader() {
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize("\r\n\r\n", MAX_HEADER_SIZE - bytesRead)),
+                UntilFunction(MatchStringOrSize("\r\n\r\n"sv, MAX_HEADER_SIZE - bytesRead)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t /*size*/) {
                     timeoutTimer.cancel();
 
