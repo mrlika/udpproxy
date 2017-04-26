@@ -52,10 +52,13 @@ private:
     class HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
     public:
         static void read(std::shared_ptr<tcp::socket> &socket) {
-            auto reader = std::shared_ptr<HttpHeaderReader>(new HttpHeaderReader(socket));
+            auto reader = std::make_shared<HttpHeaderReader>(socket);
             reader->validateHttpMethod();
         }
 
+        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket) : socket(socket), timeoutTimer(socket->get_io_service()) {}
+
+    private:
         void validateHttpMethod() {
             static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
 
@@ -158,9 +161,6 @@ private:
                     std::cout << "Done read header: " + address.to_string() + ":" + std::to_string(port) << std::endl;
                 });
         }
-
-    private:
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket) : socket(socket), timeoutTimer(socket->get_io_service()) {}
 
         std::shared_ptr<tcp::socket> socket;
         boost::asio::streambuf buffer{MAX_HEADER_SIZE};
