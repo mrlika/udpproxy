@@ -24,6 +24,9 @@ public:
     }
 
 private:
+    typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
+    typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
+
     class ServerError : public std::runtime_error {
     public:
         explicit ServerError(const std::string& message) : std::runtime_error(message) {}
@@ -31,9 +34,6 @@ private:
     };
 
     tcp::acceptor acceptor;
-
-    typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
-    typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
 
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
