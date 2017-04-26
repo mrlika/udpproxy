@@ -18,8 +18,8 @@ constexpr static boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
 public:
-    Server(boost::asio::io_service &ioService)
-            : acceptor(ioService, tcp::endpoint(tcp::v4(), 10013)) {
+    Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
+            : acceptor(ioService, endpoint) {
         startAccept();
     }
 
