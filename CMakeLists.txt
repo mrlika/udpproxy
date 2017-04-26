@@ -18,7 +18,7 @@ aux_source_directory(src LIB_SOURCES)
 file(GLOB HEADERS include/udp_proxy/*.h*)
 include_directories(include)
 
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out)
 
 add_executable(udpproxy src/main.cpp ${HEADERS})
 target_link_libraries(udpproxy boost_system)
