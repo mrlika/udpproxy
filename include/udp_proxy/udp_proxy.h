@@ -114,6 +114,7 @@ private:
 
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
 
+                        // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
                         static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})", std::regex_constants::optimize);
                         std::cmatch match;
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
