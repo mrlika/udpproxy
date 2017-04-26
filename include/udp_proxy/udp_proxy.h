@@ -51,7 +51,7 @@ private:
         }
 
         void validateHttpMethod() {
-            constexpr static std::experimental::string_view REQUEST_METHOD_STRING = "GET "sv;
+            constexpr static std::experimental::string_view REQUEST_METHOD = "GET "sv;
 
             timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
             timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &e) {
@@ -61,11 +61,11 @@ private:
             });
 
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize(REQUEST_METHOD_STRING, REQUEST_METHOD_STRING.size())),
+                UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
-                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD_STRING.size());
-                        if (REQUEST_METHOD_STRING == method) {
+                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer.data()), REQUEST_METHOD.length());
+                        if (REQUEST_METHOD == method) {
                             buffer.consume(size);
                             bytesRead += size;
                             readHttpRequestUri();
@@ -79,13 +79,26 @@ private:
         }
 
         void readHttpRequestUri() {
-            constexpr static std::experimental::string_view REQUEST_LINE_ENDING = " HTTP/1.1\r\n"sv;
+            static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
+            static constexpr size_t MAX_REQUEST_LINE_SIZE = "/udp/ddd.ddd.ddd.ddd:ddddd"sv.length() + HTTP_VERSION_ENDING.length();
+            static constexpr size_t MIN_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
 
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize(REQUEST_LINE_ENDING, MAX_HEADER_SIZE - bytesRead)),
+                UntilFunction(MatchStringOrSize("\r\n", MAX_REQUEST_LINE_SIZE)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     if (!e) {
-                        std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - REQUEST_LINE_ENDING.size()};
+                        if (size < MIN_REQUEST_LINE_SIZE) {
+                            std::cout << "error: request not supported" << std::endl;
+                            return;
+                        }
+
+                        std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer.data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
+                        if (HTTP_VERSION_ENDING != ending) {
+                            std::cout << "error: request not supported" << std::endl;
+                            return;
+                        }
+
+                        std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
 
                         static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})", std::regex_constants::optimize);
                         std::cmatch match;
@@ -120,7 +133,7 @@ private:
 
         void readRestOfHttpHeader() {
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize("\r\n\r\n"sv, MAX_HEADER_SIZE - bytesRead)),
+                UntilFunction(MatchStringOrSize("\r\n\r\n", MAX_HEADER_SIZE - bytesRead)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t /*size*/) {
                     timeoutTimer.cancel();
 
