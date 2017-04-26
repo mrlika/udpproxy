@@ -13,8 +13,8 @@ using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
-constexpr static size_t MAX_HEADER_SIZE = 4 * 1024;
-constexpr static boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
+static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
+static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
 public:
@@ -57,7 +57,7 @@ private:
         }
 
         void validateHttpMethod() {
-            constexpr static std::experimental::string_view REQUEST_METHOD = "GET "sv;
+            static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
 
             timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
             timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &e) {
