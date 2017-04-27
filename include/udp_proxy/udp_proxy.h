@@ -3,7 +3,9 @@
 #include <boost/asio.hpp>
 #include <boost/asio/system_timer.hpp>
 
+#include <cassert>
 #include <iostream>
+#include <algorithm>
 #include <regex>
 #include <unordered_map>
 #include <list>
@@ -90,7 +92,7 @@ private:
                     }
                 });
 
-            udpInput->receiverSockets.emplace_back(receiverSocket);
+            udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket));
 
             // TODO: clean finished inputs/sockets
         }
@@ -107,10 +109,18 @@ private:
                 return;
             }
 
-            auto& receiverSockets = udpInputIterator->second->receiverSockets;
-            receiverSockets.remove(receiverSocket);
+            auto& receivers = udpInputIterator->second->receivers;
+            auto receiverIterator = std::find_if(receivers.begin(), receivers.end(), [&receiverSocket] (const std::shared_ptr<UdpInput::Receiver> &receiver) { return receiver->socket == receiverSocket; });
 
-            if (receiverSockets.empty()) {
+            if (receiverIterator != receivers.end()) {
+                auto& receiver = *receiverIterator;
+                if (!receiver->writeBuffers.empty()) {
+                    receiver->writeBuffers.resize(1);
+                }
+                receivers.erase(receiverIterator);
+            }
+
+            if (receivers.empty()) {
                 udpInputs.erase(udpInputIterator);
             }
         }
@@ -135,37 +145,63 @@ private:
             }
 
             void receiveUdp() {
-                buffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
+                inputBuffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
 
-                udpSocket.async_receive_from(boost::asio::buffer(buffer->data(), buffer->size()), senderEndpoint,
-                    [this](const boost::system::error_code &e, std::size_t bytesRead) {
+                udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
+                    [this] (const boost::system::error_code &e, std::size_t bytesRead) {
                         if (e) {
                             std::cout << "error: " << e.message() << std::endl;
                             udpServer.removeUdpInput(id);
                             return;
                         }
 
-                        for (std::shared_ptr<tcp::socket>& receiverSocket : receiverSockets) {
-                            boost::asio::async_write(*receiverSocket, boost::asio::buffer(buffer->data(), bytesRead),
-                                [this, capture = buffer, receiverSocket = receiverSocket] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
-                                    if (e) {
-                                        std::cout << "error: " << e.message() << std::endl;
-                                        udpServer.removeUdpToHttpReceiver(id, receiverSocket);
-                                        return;
-                                    }
-                                });
+                        inputBuffer->resize(bytesRead);
+
+                        for (auto& receiver : receivers) {
+                            if (receiver->writeBuffers.empty()) {
+                                receiver->write(inputBuffer, udpServer, id);
+                            }
+
+                            receiver->writeBuffers.emplace_back(inputBuffer);
                         }
 
                         receiveUdp();
                     });
             }
 
+            struct Receiver : public std::enable_shared_from_this<Receiver> {
+                std::shared_ptr<tcp::socket> socket;
+                std::list<std::shared_ptr<std::vector<uint8_t>>> writeBuffers;
+
+                Receiver(std::shared_ptr<tcp::socket> &socket) noexcept : socket(socket) {}
+
+                void write(const std::shared_ptr<std::vector<uint8_t>> &buffer, UdpServer &udpServer, uint64_t inputId) {
+                    boost::asio::async_write(*socket, boost::asio::buffer(buffer->data(), buffer->size()),
+                        [this, capture = shared_from_this(), &udpServer, inputId, bufferPointer = buffer->data()] (const boost::system::error_code &e, std::size_t bytesSent) {
+                            if (e) {
+                                std::cout << "error: " << e.message() << std::endl;
+                                udpServer.removeUdpToHttpReceiver(inputId, socket);
+                                return;
+                            }
+
+                            assert(bufferPointer == writeBuffers.front()->data());
+                            (void)bytesSent; // Avoid unused parameter warning when asserts disabled
+                            assert(bytesSent == writeBuffers.front()->size());
+
+                            writeBuffers.pop_front();
+                            if (!writeBuffers.empty()) {
+                                write(writeBuffers.front(), udpServer, inputId);
+                            }
+                        });
+                }
+            };
+
             UdpServer &udpServer;
             uint64_t id;
-            std::list<std::shared_ptr<tcp::socket>> receiverSockets;
+            std::list<std::shared_ptr<Receiver>> receivers;
             udp::socket udpSocket;
             udp::endpoint senderEndpoint;
-            std::shared_ptr<std::vector<uint8_t>> buffer;
+            std::shared_ptr<std::vector<uint8_t>> inputBuffer;
             bool isStarted = false;
         };
 
@@ -297,7 +333,6 @@ private:
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
         UdpServer &udpServer;
-
         boost::asio::ip::udp::endpoint udpEndpoint;
     };
 
