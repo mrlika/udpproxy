@@ -77,10 +77,16 @@ private:
                 "\r\n"sv;
 
             boost::asio::async_write(*receiverSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-                [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t bytesSent) {
+                [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                     if (e) {
                         std::cout << "error: " << e.message() << std::endl;
                         removeUdpToHttpReceiver(inputId, receiverSocket);
+                        return;
+                    }
+
+                    auto udpInputIterator = udpInputs.find(inputId);
+                    if (udpInputIterator != udpInputs.end()) {
+                        udpInputIterator->second->start();
                     }
                 });
 
@@ -119,8 +125,13 @@ private:
                 if (udpEndpoint.address().is_multicast()) {
                     udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
                 }
+            }
 
-                receiveUdp();
+            void start() {
+                if (!isStarted) {
+                    isStarted = true;
+                    receiveUdp();
+                }
             }
 
             void receiveUdp() {
@@ -136,7 +147,7 @@ private:
 
                         for (std::shared_ptr<tcp::socket>& receiverSocket : receiverSockets) {
                             boost::asio::async_write(*receiverSocket, boost::asio::buffer(buffer->data(), bytesRead),
-                                [this, capture = buffer, receiverSocket = receiverSocket](const boost::system::error_code &e, std::size_t bytesSent) {
+                                [this, capture = buffer, receiverSocket = receiverSocket] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                                     if (e) {
                                         std::cout << "error: " << e.message() << std::endl;
                                         udpServer.removeUdpToHttpReceiver(id, receiverSocket);
@@ -155,6 +166,7 @@ private:
             udp::socket udpSocket;
             udp::endpoint senderEndpoint;
             std::shared_ptr<std::vector<uint8_t>> buffer;
+            bool isStarted = false;
         };
 
         std::unordered_map<uint32_t, std::unique_ptr<UdpInput>> udpInputs;
