@@ -64,8 +64,15 @@ private:
             UdpInput *udpInput;
 
             if (udpInputIterator == udpInputs.end()) {
-                // TODO: do not fail if can't bind to endpoint
-                auto udpInputUnique = std::make_unique<UdpInput>(*this, inputId, udpEndpoint);
+                std::unique_ptr<UdpInput> udpInputUnique;
+
+                try {
+                    udpInputUnique = std::make_unique<UdpInput>(*this, inputId, udpEndpoint);
+                } catch (const ServerError &e) {
+                    std::cout << "error: " << e.what() << std::endl;
+                    return;
+                }
+
                 udpInput = udpInputUnique.get();
                 udpInputs.emplace(inputId, std::move(udpInputUnique));
             } else {
@@ -130,7 +137,15 @@ private:
         }
 
         struct UdpInput {
-            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService, udpEndpoint) {
+            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService) {
+                udpSocket.open(udpEndpoint.protocol());
+
+                try {
+                    udpSocket.bind(udpEndpoint);
+                } catch (const boost::system::system_error &e) {
+                    throw ServerError(e.what());
+                }
+
                 udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
                 if (udpEndpoint.address().is_multicast()) {
                     udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
