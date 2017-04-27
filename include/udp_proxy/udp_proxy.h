@@ -92,7 +92,7 @@ private:
                     }
                 });
 
-            udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket));
+            udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket, *this, inputId));
 
             // TODO: clean finished inputs/sockets
         }
@@ -159,7 +159,7 @@ private:
 
                         for (auto& receiver : receivers) {
                             if (receiver->writeBuffers.empty()) {
-                                receiver->write(inputBuffer, udpServer, id);
+                                receiver->write(inputBuffer);
                             }
 
                             receiver->writeBuffers.emplace_back(inputBuffer);
@@ -171,13 +171,17 @@ private:
 
             struct Receiver : public std::enable_shared_from_this<Receiver> {
                 std::shared_ptr<tcp::socket> socket;
+                UdpServer &udpServer;
+                uint64_t inputId;
                 std::list<std::shared_ptr<std::vector<uint8_t>>> writeBuffers;
 
-                Receiver(std::shared_ptr<tcp::socket> &socket) noexcept : socket(socket) {}
+                Receiver(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer, uint64_t inputId) noexcept :
+                        socket(socket), udpServer(udpServer), inputId(inputId) {
+                }
 
-                void write(const std::shared_ptr<std::vector<uint8_t>> &buffer, UdpServer &udpServer, uint64_t inputId) {
+                void write(const std::shared_ptr<std::vector<uint8_t>> &buffer) {
                     boost::asio::async_write(*socket, boost::asio::buffer(buffer->data(), buffer->size()),
-                        [this, capture = shared_from_this(), &udpServer, inputId, bufferPointer = buffer->data()] (const boost::system::error_code &e, std::size_t bytesSent) {
+                        [this, capture = shared_from_this(), bufferPointer = buffer->data()] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (e) {
                                 std::cout << "error: " << e.message() << std::endl;
                                 udpServer.removeUdpToHttpReceiver(inputId, socket);
@@ -190,7 +194,7 @@ private:
 
                             writeBuffers.pop_front();
                             if (!writeBuffers.empty()) {
-                                write(writeBuffers.front(), udpServer, inputId);
+                                write(writeBuffers.front());
                             }
                         });
                 }
