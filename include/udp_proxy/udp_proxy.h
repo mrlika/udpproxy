@@ -71,10 +71,10 @@ private:
             }
 
             static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Server: udp-proxy\r\n"
-                    "Content-Type: application/octet-stream\r\n"
-                    "\r\n"sv;
+                "HTTP/1.1 200 OK\r\n"
+                "Server: udp-proxy\r\n"
+                "Content-Type: application/octet-stream\r\n"
+                "\r\n"sv;
 
             boost::asio::async_write(*receiverSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
                 [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t bytesSent) {
