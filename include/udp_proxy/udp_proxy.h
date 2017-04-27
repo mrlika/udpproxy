@@ -55,30 +55,66 @@ private:
     public:
         UdpServer(boost::asio::io_service &ioService) noexcept: ioService(ioService) {}
 
-        void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &httpSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
-            std::cout << "addUdpToHttpReceiver " << udpEndpoint.address().to_string() + ":" + std::to_string(udpEndpoint.port()) << std::endl;
-            uint64_t inputId = (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
+        void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &receiverSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
+            uint64_t inputId = getEndpointId(udpEndpoint);
 
             auto udpInputIterator = udpInputs.find(inputId);
             UdpInput *udpInput;
 
             if (udpInputIterator == udpInputs.end()) {
                 // TODO: do not fail if can't bind to endpoint
-                auto udpInputUnique = std::make_unique<UdpInput>(ioService, udpEndpoint);
+                auto udpInputUnique = std::make_unique<UdpInput>(*this, inputId, udpEndpoint);
                 udpInput = udpInputUnique.get();
                 udpInputs.emplace(inputId, std::move(udpInputUnique));
             } else {
                 udpInput = udpInputIterator->second.get();
             }
 
-            udpInput->receiverSockets.emplace_back(httpSocket);
+            static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Server: udp-proxy\r\n"
+                    "Content-Type: application/octet-stream\r\n"
+                    "\r\n"sv;
+
+            boost::asio::async_write(*receiverSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
+                [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t bytesSent) {
+                    if (e) {
+                        std::cout << "error: " << e.message() << std::endl;
+                        removeUdpToHttpReceiver(inputId, receiverSocket);
+                    }
+                });
+
+            udpInput->receiverSockets.emplace_back(receiverSocket);
 
             // TODO: clean finished inputs/sockets
         }
 
     private:
+        static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) {
+            return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
+        }
+
+        void removeUdpToHttpReceiver(uint64_t inputId, const std::shared_ptr<tcp::socket> &receiverSocket) {
+            auto udpInputIterator = udpInputs.find(inputId);
+
+            if (udpInputIterator == udpInputs.end()) {
+                return;
+            }
+
+            auto& receiverSockets = udpInputIterator->second->receiverSockets;
+            receiverSockets.remove(receiverSocket);
+
+            if (receiverSockets.empty()) {
+                udpInputs.erase(udpInputIterator);
+            }
+        }
+
+        void removeUdpInput(uint64_t inputId) {
+            udpInputs.erase(inputId);
+        }
+
         struct UdpInput {
-            UdpInput(boost::asio::io_service &ioService, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpSocket(ioService, udpEndpoint) {
+            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService, udpEndpoint) {
                 udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
                 if (udpEndpoint.address().is_multicast()) {
                     udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
@@ -90,29 +126,31 @@ private:
             void receiveUdp() {
                 buffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
 
-                udpSocket.async_receive_from(boost::asio::buffer(buffer->data(), buffer->size()), senderEndpoint, [this](const boost::system::error_code &e, std::size_t bytesRead) {
-                    if (e) {
-                        std::cout << "error: " << e.message() << std::endl;
-                        buffer.reset();
-                    } else {
-                        std::cout << "bytes read: " << bytesRead << std::endl;
+                udpSocket.async_receive_from(boost::asio::buffer(buffer->data(), buffer->size()), senderEndpoint,
+                    [this](const boost::system::error_code &e, std::size_t bytesRead) {
+                        if (e) {
+                            std::cout << "error: " << e.message() << std::endl;
+                            udpServer.removeUdpInput(id);
+                            return;
+                        }
 
                         for (std::shared_ptr<tcp::socket>& receiverSocket : receiverSockets) {
-                            // TODO: write HTTP header first
-                            boost::asio::async_write(*receiverSocket, boost::asio::buffer(buffer->data(), bytesRead), [this, capture = buffer](const boost::system::error_code &e, std::size_t bytesSent) {
-                                if (e) {
-                                    std::cout << "error: " << e.message() << std::endl;
-                                } else {
-                                    std::cout << "bytes sent: " << bytesSent << std::endl;
-                                }
-                            });
+                            boost::asio::async_write(*receiverSocket, boost::asio::buffer(buffer->data(), bytesRead),
+                                [this, capture = buffer, receiverSocket = receiverSocket](const boost::system::error_code &e, std::size_t bytesSent) {
+                                    if (e) {
+                                        std::cout << "error: " << e.message() << std::endl;
+                                        udpServer.removeUdpToHttpReceiver(id, receiverSocket);
+                                        return;
+                                    }
+                                });
                         }
 
                         receiveUdp();
-                    }
-                });
+                    });
             }
 
+            UdpServer &udpServer;
+            uint64_t id;
             std::list<std::shared_ptr<tcp::socket>> receiverSockets;
             udp::socket udpSocket;
             udp::endpoint senderEndpoint;
