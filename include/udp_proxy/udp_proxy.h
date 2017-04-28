@@ -22,6 +22,7 @@ using namespace std::experimental::string_view_literals;
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
 static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
 static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
+static constexpr size_t MAX_WRITE_QUEUE_LENGTH = 1024;
 static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
@@ -142,8 +143,13 @@ private:
                         inputBuffer->resize(bytesRead);
 
                         for (auto& receiver : receivers) {
-                            if (receiver->writeBuffers.empty()) {
+                            size_t length = receiver->writeBuffers.size();
+
+                            if (length == 0) {
                                 receiver->write(inputBuffer);
+                            } else if ((MAX_WRITE_QUEUE_LENGTH != 0) && (length >= MAX_WRITE_QUEUE_LENGTH)) {
+                                std::cout << "error: write queue limit reached - cleaning queue" << std::endl;
+                                receiver->writeBuffers.resize(1);
                             }
 
                             receiver->writeBuffers.emplace_back(inputBuffer);
