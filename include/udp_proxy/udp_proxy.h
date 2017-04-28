@@ -18,6 +18,7 @@ using boost::asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
+// TODO: make this configurable
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
 static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
 static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
@@ -101,54 +102,9 @@ private:
                 });
 
             udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket, *this, inputId));
-
-            // TODO: clean finished inputs/sockets
         }
 
     private:
-        static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) {
-            return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
-        }
-
-        void removeUdpToHttpReceiver(uint64_t inputId, const std::shared_ptr<tcp::socket> &receiverSocket) {
-            auto udpInputIterator = udpInputs.find(inputId);
-
-            if (udpInputIterator == udpInputs.end()) {
-                return;
-            }
-
-            auto& receivers = udpInputIterator->second->receivers;
-            auto receiverIterator = std::find_if(receivers.begin(), receivers.end(), [&receiverSocket] (const std::shared_ptr<UdpInput::Receiver> &receiver) { return receiver->socket == receiverSocket; });
-
-            if (receiverIterator != receivers.end()) {
-                auto& receiver = *receiverIterator;
-                if (!receiver->writeBuffers.empty()) {
-                    receiver->writeBuffers.resize(1);
-                }
-                receivers.erase(receiverIterator);
-            }
-
-            if (receivers.empty()) {
-                udpInputs.erase(udpInputIterator);
-            }
-        }
-
-        void removeUdpInput(uint64_t inputId) {
-            auto udpInputIterator = udpInputs.find(inputId);
-
-            if (udpInputIterator == udpInputs.end()) {
-                return;
-            }
-
-            for (auto& receiver : udpInputIterator->second->receivers) {
-                if (!receiver->writeBuffers.empty()) {
-                    receiver->writeBuffers.resize(1);
-                }
-            }
-
-            udpInputs.erase(udpInputIterator);
-        }
-
         struct UdpInput : public std::enable_shared_from_this<UdpInput> {
             UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService) {
                 udpSocket.open(udpEndpoint.protocol());
@@ -183,19 +139,17 @@ private:
                             return;
                         }
 
-                        if (!receivers.empty()) {
-                            inputBuffer->resize(bytesRead);
+                        inputBuffer->resize(bytesRead);
 
-                            for (auto& receiver : receivers) {
-                                if (receiver->writeBuffers.empty()) {
-                                    receiver->write(inputBuffer);
-                                }
-
-                                receiver->writeBuffers.emplace_back(inputBuffer);
+                        for (auto& receiver : receivers) {
+                            if (receiver->writeBuffers.empty()) {
+                                receiver->write(inputBuffer);
                             }
 
-                            receiveUdp();
+                            receiver->writeBuffers.emplace_back(inputBuffer);
                         }
+
+                        receiveUdp();
                     });
             }
 
@@ -238,6 +192,60 @@ private:
             std::shared_ptr<std::vector<uint8_t>> inputBuffer;
             bool isStarted = false;
         };
+
+        static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) {
+            return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
+        }
+
+        void removeUdpToHttpReceiver(uint64_t inputId, const std::shared_ptr<tcp::socket> &receiverSocket) {
+            auto udpInputIterator = udpInputs.find(inputId);
+
+            if (udpInputIterator == udpInputs.end()) {
+                return;
+            }
+
+            removeUdpToHttpReceiver(udpInputIterator, receiverSocket);
+        }
+
+        void removeUdpToHttpReceiver(std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, const std::shared_ptr<tcp::socket> &receiverSocket) {
+            auto& receivers = udpInputIterator->second->receivers;
+            auto receiverIterator = std::find_if(receivers.begin(), receivers.end(), [&receiverSocket] (const std::shared_ptr<UdpInput::Receiver> &receiver) { return receiver->socket == receiverSocket; });
+            removeUdpToHttpReceiver(udpInputIterator, receiverIterator);
+        }
+
+        void removeUdpToHttpReceiver(std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, std::list<std::shared_ptr<UdpInput::Receiver>>::iterator receiverIterator) {
+            auto& receivers = udpInputIterator->second->receivers;
+
+            if (receiverIterator != receivers.end()) {
+                auto& receiver = *receiverIterator;
+                receiver->socket->cancel();
+                receiver->socket->close();
+                receivers.erase(receiverIterator);
+            }
+
+            if (receivers.empty()) {
+                udpInputIterator->second->udpSocket.cancel();
+                udpInputIterator->second->udpSocket.close();
+                udpInputs.erase(udpInputIterator);
+            }
+        }
+
+        void removeUdpInput(uint64_t inputId) {
+            auto udpInputIterator = udpInputs.find(inputId);
+
+            if (udpInputIterator == udpInputs.end()) {
+                return;
+            }
+
+            for (auto& receiver : udpInputIterator->second->receivers) {
+                receiver->socket->cancel();
+                receiver->socket->close();
+            }
+
+            udpInputIterator->second->udpSocket.cancel();
+            udpInputIterator->second->udpSocket.close();
+            udpInputs.erase(udpInputIterator);
+        }
 
         std::unordered_map<uint32_t, std::shared_ptr<UdpInput>> udpInputs;
         boost::asio::io_service &ioService;
