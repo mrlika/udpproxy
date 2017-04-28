@@ -20,7 +20,7 @@ using namespace std::experimental::string_view_literals;
 
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
 static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
-static constexpr size_t UDP_DATAGRAM_MAX_SIZE = 4 * 1024;
+static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
 static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
@@ -173,7 +173,7 @@ private:
             }
 
             void receiveUdp() {
-                inputBuffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
+                inputBuffer = std::make_shared<std::vector<uint8_t>>(MAX_UDP_DATAGRAM_SIZE);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
                     [this, capture = shared_from_this()] (const boost::system::error_code &e, std::size_t bytesRead) {
