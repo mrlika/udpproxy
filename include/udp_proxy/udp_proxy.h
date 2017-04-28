@@ -23,12 +23,13 @@ static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
 static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
 static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
 static constexpr size_t MAX_WRITE_QUEUE_LENGTH = 1024;
+static constexpr size_t MAX_HTTP_CLIENTS = 100;
 static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
 class Server {
 public:
-    Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) :
-            acceptor(ioService, endpoint), udpServer(ioService) {
+    Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
+            : acceptor(ioService, endpoint), udpServer(*this) {
         startAccept();
     }
 
@@ -47,7 +48,9 @@ private:
 
         acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
             if (!e) {
-                HttpHeaderReader::read(socket, udpServer);
+                if ((MAX_HTTP_CLIENTS != 0) && (clientsCounter < MAX_HTTP_CLIENTS)) {
+                    HttpHeaderReader::read(socket, *this);
+                }
             } else {
                 std::cout << e.message() << std::endl;
             }
@@ -58,7 +61,7 @@ private:
 
     class UdpServer {
     public:
-        UdpServer(boost::asio::io_service &ioService) noexcept: ioService(ioService) {}
+        UdpServer(Server &server) noexcept: server(server) {}
 
         void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &receiverSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
             uint64_t inputId = getEndpointId(udpEndpoint);
@@ -102,12 +105,13 @@ private:
                     }
                 });
 
-            udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket, *this, inputId));
+            udpInput->receivers.emplace_back(std::make_shared<UdpInput::Receiver>(receiverSocket, server, inputId));
         }
 
     private:
         struct UdpInput : public std::enable_shared_from_this<UdpInput> {
-            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService) {
+            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
+                    : udpServer(udpServer), id(id), udpSocket(udpServer.server.acceptor.get_io_service()) {
                 udpSocket.open(udpEndpoint.protocol());
 
                 try {
@@ -160,13 +164,13 @@ private:
             }
 
             struct Receiver : public std::enable_shared_from_this<Receiver> {
-                std::shared_ptr<tcp::socket> socket;
-                UdpServer &udpServer;
-                uint64_t inputId;
-                std::list<std::shared_ptr<std::vector<uint8_t>>> writeBuffers;
+                Receiver(std::shared_ptr<tcp::socket> &socket, Server &server, uint64_t inputId) noexcept
+                        : socket(socket), server(server), inputId(inputId) {
+                    server.clientsCounter++;
+                }
 
-                Receiver(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer, uint64_t inputId) noexcept :
-                        socket(socket), udpServer(udpServer), inputId(inputId) {
+                ~Receiver() noexcept {
+                    server.clientsCounter--;
                 }
 
                 void write(const std::shared_ptr<std::vector<uint8_t>> &buffer) {
@@ -174,7 +178,7 @@ private:
                         [this, capture = shared_from_this(), bufferPointer = buffer->data()] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (e) {
                                 std::cout << "error: " << e.message() << std::endl;
-                                udpServer.removeUdpToHttpReceiver(inputId, socket);
+                                server.udpServer.removeUdpToHttpReceiver(inputId, socket);
                                 return;
                             }
 
@@ -188,6 +192,11 @@ private:
                             }
                         });
                 }
+
+                std::shared_ptr<tcp::socket> socket;
+                Server &server;
+                uint64_t inputId;
+                std::list<std::shared_ptr<std::vector<uint8_t>>> writeBuffers;
             };
 
             UdpServer &udpServer;
@@ -254,20 +263,23 @@ private:
         }
 
         std::unordered_map<uint32_t, std::shared_ptr<UdpInput>> udpInputs;
-        boost::asio::io_service &ioService;
+        Server &server;
     };
 
     class HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
     public:
-        static void read(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer) {
-            auto reader = std::make_shared<HttpHeaderReader>(socket, udpServer);
+        static void read(std::shared_ptr<tcp::socket> &socket, Server &server) {
+            auto reader = std::make_shared<HttpHeaderReader>(socket, server);
             reader->validateHttpMethod();
         }
 
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer) :
-                socket(socket),
-                timeoutTimer(socket->get_io_service()),
-                udpServer(udpServer) {
+        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, Server &server)
+                : socket(socket), timeoutTimer(socket->get_io_service()), server(server) {
+            server.clientsCounter++;
+        }
+
+        ~HttpHeaderReader() noexcept {
+            server.clientsCounter--;
         }
 
     private:
@@ -372,7 +384,7 @@ private:
                         return;
                     }
 
-                    udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
+                    server.udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
                 });
         }
 
@@ -380,7 +392,7 @@ private:
         boost::asio::streambuf buffer{MAX_HEADER_SIZE};
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
-        UdpServer &udpServer;
+        Server &server;
         boost::asio::ip::udp::endpoint udpEndpoint;
     };
 
@@ -419,6 +431,7 @@ private:
 
     tcp::acceptor acceptor;
     UdpServer udpServer;
+    size_t clientsCounter = 0;
 };
 
 }
