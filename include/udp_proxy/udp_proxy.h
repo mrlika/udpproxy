@@ -20,7 +20,6 @@ using namespace std::experimental::string_view_literals;
 
 // TODO: make this configurable
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
-static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
 static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
 static constexpr size_t MAX_WRITE_QUEUE_LENGTH = 1024;
 static constexpr size_t MAX_HTTP_CLIENTS = 100;
@@ -318,11 +317,10 @@ private:
 
         void readHttpRequestUri() {
             static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
-            static constexpr size_t MAX_REQUEST_LINE_SIZE = "/udp/ddd.ddd.ddd.ddd:ddddd"sv.length() + HTTP_VERSION_ENDING.length() + MAX_QUERY_STRING_LENGTH;
             static constexpr size_t MIN_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
 
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize("\r\n", MAX_REQUEST_LINE_SIZE)),
+                UntilFunction(MatchStringOrSize("\r\n", MAX_HEADER_SIZE - bytesRead - "\r\n"sv.length())),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     try {
                         if (e) {
