@@ -136,7 +136,7 @@ private:
             udpInputs.erase(inputId);
         }
 
-        struct UdpInput {
+        struct UdpInput : public std::enable_shared_from_this<UdpInput> {
             UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint) : udpServer(udpServer), id(id), udpSocket(udpServer.ioService) {
                 udpSocket.open(udpEndpoint.protocol());
 
@@ -163,24 +163,26 @@ private:
                 inputBuffer = std::make_shared<std::vector<uint8_t>>(UDP_DATAGRAM_MAX_SIZE);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
-                    [this] (const boost::system::error_code &e, std::size_t bytesRead) {
+                    [this, capture = shared_from_this()] (const boost::system::error_code &e, std::size_t bytesRead) {
                         if (e) {
                             std::cout << "error: " << e.message() << std::endl;
                             udpServer.removeUdpInput(id);
                             return;
                         }
 
-                        inputBuffer->resize(bytesRead);
+                        if (!receivers.empty()) {
+                            inputBuffer->resize(bytesRead);
 
-                        for (auto& receiver : receivers) {
-                            if (receiver->writeBuffers.empty()) {
-                                receiver->write(inputBuffer);
+                            for (auto& receiver : receivers) {
+                                if (receiver->writeBuffers.empty()) {
+                                    receiver->write(inputBuffer);
+                                }
+
+                                receiver->writeBuffers.emplace_back(inputBuffer);
                             }
 
-                            receiver->writeBuffers.emplace_back(inputBuffer);
+                            receiveUdp();
                         }
-
-                        receiveUdp();
                     });
             }
 
@@ -224,7 +226,7 @@ private:
             bool isStarted = false;
         };
 
-        std::unordered_map<uint32_t, std::unique_ptr<UdpInput>> udpInputs;
+        std::unordered_map<uint32_t, std::shared_ptr<UdpInput>> udpInputs;
         boost::asio::io_service &ioService;
     };
 
