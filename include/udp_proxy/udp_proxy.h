@@ -133,7 +133,19 @@ private:
         }
 
         void removeUdpInput(uint64_t inputId) {
-            udpInputs.erase(inputId);
+            auto udpInputIterator = udpInputs.find(inputId);
+
+            if (udpInputIterator == udpInputs.end()) {
+                return;
+            }
+
+            for (auto& receiver : udpInputIterator->second->receivers) {
+                if (!receiver->writeBuffers.empty()) {
+                    receiver->writeBuffers.resize(1);
+                }
+            }
+
+            udpInputs.erase(udpInputIterator);
         }
 
         struct UdpInput : public std::enable_shared_from_this<UdpInput> {
