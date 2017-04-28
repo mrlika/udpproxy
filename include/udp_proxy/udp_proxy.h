@@ -19,6 +19,7 @@ using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
 static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
+static constexpr size_t MAX_QUERY_STRING_LENGTH = 1024;
 static constexpr size_t UDP_DATAGRAM_MAX_SIZE = 4 * 1024;
 static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
 
@@ -291,7 +292,7 @@ private:
 
         void readHttpRequestUri() {
             static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
-            static constexpr size_t MAX_REQUEST_LINE_SIZE = "/udp/ddd.ddd.ddd.ddd:ddddd"sv.length() + HTTP_VERSION_ENDING.length();
+            static constexpr size_t MAX_REQUEST_LINE_SIZE = "/udp/ddd.ddd.ddd.ddd:ddddd"sv.length() + HTTP_VERSION_ENDING.length() + MAX_QUERY_STRING_LENGTH;
             static constexpr size_t MIN_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
 
             boost::asio::async_read_until(*socket, buffer,
@@ -312,7 +313,7 @@ private:
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
 
                         // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
-                        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})", std::regex_constants::optimize);
+                        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
                         std::cmatch match;
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
 
