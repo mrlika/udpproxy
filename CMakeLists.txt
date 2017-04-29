@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Boost 1.62 REQUIRED)
 include_directories(${BOOST_INCLUDE_DIR})
+add_definitions(-DBOOST_ERROR_CODE_HEADER_ONLY) # prevents linking with boost_system
 
 if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -21,4 +22,4 @@ include_directories(include)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out)
 
 add_executable(udpproxy src/main.cpp ${HEADERS})
-target_link_libraries(udpproxy boost_system)
+target_link_libraries(udpproxy)
