@@ -374,7 +374,10 @@ private:
                         unsigned long port;
 
                         try {
+                            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
                             port = std::stoul(match[2]);
+                            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
+                            // possible only when from_string supports string_view
                             address = boost::asio::ip::address::from_string(match[1]);
                         } catch (...) {
                             throw ServerError("wrong URI");
