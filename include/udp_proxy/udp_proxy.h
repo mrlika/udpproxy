@@ -18,20 +18,25 @@ using boost::asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
-// TODO: make this configurable
-static constexpr size_t MAX_HEADER_SIZE = 4 * 1024;
-static constexpr size_t MAX_UDP_DATAGRAM_SIZE = 4 * 1024;
-static constexpr size_t MAX_WRITE_QUEUE_LENGTH = 1024;
-static constexpr size_t MAX_HTTP_CLIENTS = 100;
-static constexpr boost::asio::system_timer::duration HEADER_READ_TIMEOUT = 1s;
-static constexpr bool VERBOSE_LOGGING = true;
-
 class Server {
 public:
     Server(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : acceptor(ioService, endpoint), udpServer(*this) {
         startAccept();
     }
+
+    void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
+    size_t getMaxHeaderSize() { return maxHeaderSize; }
+    void setMaxUdpDatagramSize(size_t value) { maxUdpDatagramSize = value; }
+    size_t getMaxUdpDatagramSize() { return maxUdpDatagramSize; }
+    void setMaxWriteQueueLength(size_t value) { maxWriteQueueLength = value; }
+    size_t getMaxWriteQueueLength() { return maxWriteQueueLength; }
+    void setMaxHttpClients(size_t value) { maxHttpClients = value; }
+    size_t getMaxHttpClients() { return maxHttpClients; };
+    void setHeaderReadTimeout(boost::asio::system_timer::duration value) { headerReadTimeout = value; }
+    boost::asio::system_timer::duration getHeaderReadTimeout() { return headerReadTimeout; }
+    void VerboseLogging(bool value) { verboseLogging = value; }
+    bool getVerboseLogging() { return verboseLogging; }
 
 private:
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
@@ -48,7 +53,7 @@ private:
 
         acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
             if (!e) {
-                if ((MAX_HTTP_CLIENTS != 0) && (clientsCounter < MAX_HTTP_CLIENTS)) {
+                if ((maxHttpClients != 0) && (clientsCounter < maxHttpClients)) {
                     HttpHeaderReader::read(socket, *this);
                 }
             } else {
@@ -73,7 +78,7 @@ private:
                 std::unique_ptr<UdpInput> udpInputUnique;
 
                 try {
-                    udpInputUnique = std::make_unique<UdpInput>(*this, inputId, udpEndpoint);
+                    udpInputUnique = std::make_unique<UdpInput>(server, inputId, udpEndpoint);
                 } catch (const ServerError &e) {
                     std::cerr << "UDP socket setup error: " << e.what() << std::endl;
                     return;
@@ -94,7 +99,7 @@ private:
             boost::asio::async_write(*receiverSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
                 [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                     if (e) {
-                        if (VERBOSE_LOGGING) {
+                        if (server.verboseLogging) {
                             std::cerr << "HTTP header write error: " << e.message() << std::endl;
                         }
                         removeUdpToHttpReceiver(inputId, receiverSocket);
@@ -112,8 +117,9 @@ private:
 
     private:
         struct UdpInput : public std::enable_shared_from_this<UdpInput> {
-            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
-                    : udpServer(udpServer), id(id), udpSocket(udpServer.server.acceptor.get_io_service()), udpEndpoint(udpEndpoint) {
+            UdpInput(Server &server, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
+                    : server(server), id(id), udpSocket(server.acceptor.get_io_service()),
+                      udpEndpoint(udpEndpoint) {
                 udpSocket.open(udpEndpoint.protocol());
 
                 try {
@@ -127,13 +133,13 @@ private:
                     udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
                 }
 
-                if (VERBOSE_LOGGING) {
+                if (server.verboseLogging) {
                     std::cerr << "new UDP input: udp://" << udpSocket.local_endpoint().address() << ":" << udpSocket.local_endpoint().port() << std::endl;
                 }
             }
 
             ~UdpInput() {
-                if (VERBOSE_LOGGING) {
+                if (server.verboseLogging) {
                     std::cerr << "remove UDP input: " << udpEndpoint.address() << ":" << udpEndpoint.port() << std::endl;
                 }
             }
@@ -146,13 +152,13 @@ private:
             }
 
             void receiveUdp() {
-                inputBuffer = std::make_shared<std::vector<uint8_t>>(MAX_UDP_DATAGRAM_SIZE);
+                inputBuffer = std::make_shared<std::vector<uint8_t>>(server.maxUdpDatagramSize);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
                     [this, capture = shared_from_this()] (const boost::system::error_code &e, std::size_t bytesRead) {
                         if (e) {
                             std::cerr << "UDP socket receive error: " << e.message() << std::endl;
-                            udpServer.removeUdpInput(id);
+                            server.udpServer.removeUdpInput(id);
                             return;
                         }
 
@@ -163,7 +169,7 @@ private:
 
                             if (length == 0) {
                                 receiver->write(inputBuffer);
-                            } else if ((MAX_WRITE_QUEUE_LENGTH != 0) && (length >= MAX_WRITE_QUEUE_LENGTH)) {
+                            } else if ((server.maxWriteQueueLength != 0) && (length >= server.maxWriteQueueLength)) {
                                 std::cerr << "error: write queue limit reached - cleaning queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
                                 receiver->writeBuffers.resize(1);
                             }
@@ -178,14 +184,14 @@ private:
             struct Receiver : public std::enable_shared_from_this<Receiver> {
                 Receiver(std::shared_ptr<tcp::socket> &socket, Server &server, uint64_t inputId) noexcept
                         : socket(socket), server(server), inputId(inputId), remoteEndpoint(socket->remote_endpoint()) {
-                    if (VERBOSE_LOGGING) {
+                    if (server.verboseLogging) {
                         std::cerr << "new HTTP client: " << remoteEndpoint.address() << ":" << remoteEndpoint.port() << std::endl;
                     }
                     server.clientsCounter++;
                 }
 
                 ~Receiver() noexcept {
-                    if (VERBOSE_LOGGING) {
+                    if (server.verboseLogging) {
                         std::cerr << "remove HTTP client: " << remoteEndpoint.address() << ":" << remoteEndpoint.port() << std::endl;
                     }
                     server.clientsCounter--;
@@ -195,7 +201,7 @@ private:
                     boost::asio::async_write(*socket, boost::asio::buffer(buffer->data(), buffer->size()),
                         [this, capture = shared_from_this(), bufferPointer = buffer->data()] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (e) {
-                                if (VERBOSE_LOGGING) {
+                                if (server.verboseLogging) {
                                     std::cerr << "HTTP write error: " << e.message() << std::endl;
                                 }
                                 server.udpServer.removeUdpToHttpReceiver(inputId, socket);
@@ -220,7 +226,7 @@ private:
                 std::list<std::shared_ptr<std::vector<uint8_t>>> writeBuffers;
             };
 
-            UdpServer &udpServer;
+            Server &server;
             uint64_t id;
             std::list<std::shared_ptr<Receiver>> receivers;
             udp::socket udpSocket;
@@ -296,7 +302,8 @@ private:
         }
 
         HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, Server &server)
-                : socket(socket), timeoutTimer(socket->get_io_service()), server(server) {
+                : socket(socket), buffer(server.maxHeaderSize),
+                  timeoutTimer(socket->get_io_service()), server(server) {
             server.clientsCounter++;
         }
 
@@ -308,7 +315,7 @@ private:
         void validateHttpMethod() {
             static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
 
-            timeoutTimer.expires_from_now(HEADER_READ_TIMEOUT);
+            timeoutTimer.expires_from_now(server.headerReadTimeout);
             timeoutTimer.async_wait([this, capture = shared_from_this()] (const boost::system::error_code &e) {
                 if (e != boost::system::errc::operation_canceled) {
                     socket->cancel();
@@ -332,7 +339,7 @@ private:
                         bytesRead += size;
                         readHttpRequestUri();
                     } catch (const ServerError &e) {
-                        if (VERBOSE_LOGGING) {
+                        if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.what() << std::endl;
                         }
                         timeoutTimer.cancel();
@@ -345,7 +352,7 @@ private:
             static constexpr size_t MIN_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
 
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize("\r\n", MAX_HEADER_SIZE - bytesRead - "\r\n"sv.length())),
+                UntilFunction(MatchStringOrSize("\r\n", server.maxHeaderSize - bytesRead - "\r\n"sv.length())),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t size) {
                     try {
                         if (e) {
@@ -393,7 +400,7 @@ private:
                         bytesRead += (size - 2);
                         readRestOfHttpHeader();
                     } catch (const ServerError &e) {
-                        if (VERBOSE_LOGGING) {
+                        if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.what() << std::endl;
                         }
                         timeoutTimer.cancel();
@@ -403,12 +410,12 @@ private:
 
         void readRestOfHttpHeader() {
             boost::asio::async_read_until(*socket, buffer,
-                UntilFunction(MatchStringOrSize("\r\n\r\n", MAX_HEADER_SIZE - bytesRead)),
+                UntilFunction(MatchStringOrSize("\r\n\r\n", server.maxHeaderSize - bytesRead)),
                 [this, capture = shared_from_this()] (const boost::system::error_code &e, size_t /*size*/) {
                     timeoutTimer.cancel();
 
                     if (e) {
-                        if (VERBOSE_LOGGING) {
+                        if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.message() << std::endl;
                         }
                         return;
@@ -419,7 +426,7 @@ private:
         }
 
         std::shared_ptr<tcp::socket> socket;
-        boost::asio::streambuf buffer{MAX_HEADER_SIZE};
+        boost::asio::streambuf buffer;
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
         Server &server;
@@ -462,6 +469,13 @@ private:
     tcp::acceptor acceptor;
     UdpServer udpServer;
     size_t clientsCounter = 0;
+
+    size_t maxHeaderSize = 4 * 1024;
+    size_t maxUdpDatagramSize = 4 * 1024;
+    size_t maxWriteQueueLength = 1024;
+    size_t maxHttpClients = 100;
+    boost::asio::system_timer::duration headerReadTimeout = 1s;
+    bool verboseLogging = true;
 };
 
 }
