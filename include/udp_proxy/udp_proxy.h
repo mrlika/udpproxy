@@ -28,15 +28,15 @@ public:
 
     void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
     size_t getMaxHeaderSize() { return maxHeaderSize; }
-    void setMaxUdpDatagramSize(size_t value) { maxUdpDatagramSize = value; }
-    size_t getMaxUdpDatagramSize() { return maxUdpDatagramSize; }
+    void setHeaderReadTimeout(boost::asio::system_timer::duration value) { headerReadTimeout = value; }
+    boost::asio::system_timer::duration getHeaderReadTimeout() { return headerReadTimeout; }
+    void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
+    size_t getMaxUdpDataSize() { return maxUdpDataSize; }
     void setMaxWriteQueueLength(size_t value) { maxWriteQueueLength = value; }
     size_t getMaxWriteQueueLength() { return maxWriteQueueLength; }
     void setMaxHttpClients(size_t value) { maxHttpClients = value; }
     size_t getMaxHttpClients() { return maxHttpClients; };
-    void setHeaderReadTimeout(boost::asio::system_timer::duration value) { headerReadTimeout = value; }
-    boost::asio::system_timer::duration getHeaderReadTimeout() { return headerReadTimeout; }
-    void VerboseLogging(bool value) { verboseLogging = value; }
+    void setVerboseLogging(bool value) { verboseLogging = value; }
     bool getVerboseLogging() { return verboseLogging; }
 
 private:
@@ -155,7 +155,7 @@ private:
             }
 
             void receiveUdp() {
-                inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(server.maxUdpDatagramSize);
+                inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(server.maxUdpDataSize);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
                     [this, capture = this->shared_from_this()] (const boost::system::error_code &e, std::size_t bytesRead) {
@@ -474,10 +474,10 @@ private:
     size_t clientsCounter = 0;
 
     size_t maxHeaderSize = 4 * 1024;
-    size_t maxUdpDatagramSize = 4 * 1024;
-    size_t maxWriteQueueLength = 1024;
-    size_t maxHttpClients = 100;
     boost::asio::system_timer::duration headerReadTimeout = 1s;
+    size_t maxUdpDataSize = 4 * 1024;
+    size_t maxWriteQueueLength = 1024;
+    size_t maxHttpClients = 0;
     bool verboseLogging = true;
 };
 
