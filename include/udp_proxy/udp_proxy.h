@@ -56,8 +56,10 @@ private:
 
         acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
             if (!e) {
-                if ((maxHttpClients != 0) && (clientsCounter < maxHttpClients)) {
+                if ((maxHttpClients == 0) || (clientsCounter < maxHttpClients)) {
                     HttpHeaderReader::read(socket, *this);
+                } else if (verboseLogging) {
+                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint().address() << std::endl;
                 }
             } else {
                 std::cerr << "TCP accept error: " << e.message() << std::endl;
