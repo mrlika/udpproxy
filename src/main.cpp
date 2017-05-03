@@ -7,8 +7,7 @@ namespace po = boost::program_options;
 
 namespace UdpProxy {
 
-std::istream& operator>>(std::istream &in, Server::OutputQueueOverflowAlgorithm &algorithm)
-{
+std::istream& operator>>(std::istream &in, Server::OutputQueueOverflowAlgorithm &algorithm) {
     std::string token;
     in >> token;
 
@@ -23,8 +22,7 @@ std::istream& operator>>(std::istream &in, Server::OutputQueueOverflowAlgorithm 
     return in;
 }
 
-std::ostream& operator<<(std::ostream &out, Server::OutputQueueOverflowAlgorithm algorithm)
-{
+std::ostream& operator<<(std::ostream &out, Server::OutputQueueOverflowAlgorithm algorithm) {
     switch (algorithm) {
     case UdpProxy::Server::OutputQueueOverflowAlgorithm::ClearQueue:
         out << "clearq";
@@ -48,6 +46,7 @@ int main(int argc, const char * const argv[]) {
     size_t maxOutputQueueLength;
     UdpProxy::Server::OutputQueueOverflowAlgorithm overflowAlgorithm;
     bool verboseLogging;
+    bool enableStatus;
 
     po::options_description description("Options");
     description.add_options()
@@ -65,7 +64,8 @@ int main(int argc, const char * const argv[]) {
         ("outputq,R", po::value<size_t>(&maxOutputQueueLength)->default_value(1024), "Maximum output queue length per client (0 = unlimited)")
         ("oqoverflow,o", po::value<UdpProxy::Server::OutputQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::Server::OutputQueueOverflowAlgorithm::ClearQueue),
             "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
-        ("verbose,v", "Enable verbose output");
+        ("verbose,v", "Enable verbose output")
+        ("status,S", "Enable /status URL");
 
     po::variables_map variablesMap;
     try {
@@ -82,6 +82,7 @@ int main(int argc, const char * const argv[]) {
     }
 
     verboseLogging = variablesMap.count("verbose");
+    enableStatus = variablesMap.count("status");
 
     try {
         boost::asio::io_service ioService;
@@ -92,6 +93,7 @@ int main(int argc, const char * const argv[]) {
         server.setMaxOutputQueueLength(maxOutputQueueLength);
         server.setOutputQueueOverflowAlgorithm(overflowAlgorithm);
         server.setVerboseLogging(verboseLogging);
+        server.setEnableStatus(enableStatus);
 
         std::cout << "Running on port " << port << std::endl;
         ioService.run();

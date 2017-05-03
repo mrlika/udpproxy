@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/system_timer.hpp>
+#include <boost/lexical_cast.hpp>
 
 #include <cassert>
 #include <iostream>
@@ -45,6 +46,8 @@ public:
     OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() { return overflowAlgorithm; };
     void setVerboseLogging(bool value) { verboseLogging = value; }
     bool getVerboseLogging() { return verboseLogging; }
+    void setEnableStatus(bool value) { enableStatus = value; }
+    bool getEnableStatus() { return enableStatus; }
 
 private:
     typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<uint8_t>> InputBuffersAllocator;
@@ -76,8 +79,7 @@ private:
         });
     }
 
-    class UdpServer {
-    public:
+    struct UdpServer {
         UdpServer(BasicServer &server) noexcept: server(server) {}
 
         void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &receiverSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
@@ -127,7 +129,6 @@ private:
             udpInput->receivers.emplace_back(std::make_shared<typename UdpInput::Receiver>(receiverSocket, server, inputId));
         }
 
-    private:
         struct UdpInput : public std::enable_shared_from_this<UdpServer::UdpInput> {
             UdpInput(BasicServer &server, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
                     : server(server), id(id), udpSocket(server.acceptor.get_io_service()),
@@ -372,7 +373,8 @@ private:
 
         void readHttpRequestUri() {
             static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
-            static constexpr size_t MIN_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
+            static constexpr size_t MIN_UDP_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
+            static constexpr std::experimental::string_view STATUS_URI = "/status"sv;
 
             boost::asio::async_read_until(*socket, buffer,
                 UntilFunction(MatchStringOrSize("\r\n", server.maxHeaderSize - bytesRead - "\r\n"sv.length())),
@@ -380,7 +382,7 @@ private:
                     try {
                         if (e) {
                             throw ServerError(e.message());
-                        } else if (size < MIN_REQUEST_LINE_SIZE) {
+                        } else if (size <= HTTP_VERSION_ENDING.length()) {
                             throw ServerError("request not supported");
                         }
 
@@ -390,6 +392,26 @@ private:
                         }
 
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
+
+                        if (server.enableStatus && (size == STATUS_URI.length() + HTTP_VERSION_ENDING.length())) {
+                            std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer.data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
+                            if (HTTP_VERSION_ENDING != ending) {
+                                throw ServerError("request not supported");
+                            }
+
+                            std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer.data()), size - HTTP_VERSION_ENDING.length()};
+                            if (uri == STATUS_URI) {
+                                processStatus = true;
+                                buffer.consume(size - 2); // Do not consume CRLF
+                                bytesRead += (size - 2);
+                                readRestOfHttpHeader();
+                                return;
+                            } else {
+                                throw ServerError("request not supported");
+                            }
+                        } else if (size < MIN_UDP_REQUEST_LINE_SIZE) {
+                            throw ServerError("request not supported");
+                        }
 
                         // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
                         static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
@@ -444,7 +466,69 @@ private:
                         return;
                     }
 
-                    server.udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
+                    if (processStatus) {
+                        if (server.verboseLogging) {
+                            std::cerr << "status HTTP client: " << socket->remote_endpoint().address() << ":" << socket->remote_endpoint().port() << std::endl;
+                        }
+
+                        static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
+                            "HTTP/1.1 200 OK\r\n"
+                            "Server: udp-proxy\r\n"
+                            "Content-Type: application/json\r\n"
+                            "\r\n"sv;
+
+                        boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
+                            [this, capture = this->shared_from_this()] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                                if (e) {
+                                    if (server.verboseLogging) {
+                                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
+                                    }
+                                    return;
+                                }
+
+                                writeJsonStatus();
+                            });
+                    } else {
+                        server.udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
+                    }
+                });
+        }
+
+        void writeJsonStatus() {
+            // TODO: optimize JSON output
+            std::ostringstream out;
+
+            out << '{';
+            out << "\"clients\":[";
+            bool first = true;
+            for (const auto& udpInput : server.udpServer.udpInputs) {
+                std::string udpEndpointJson = "\"udp_endpoint\":\"" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + "\",";
+                for (const auto& receiver : udpInput.second->receivers) {
+                    if (first) {
+                        first = false;
+                        out << '{';
+                    } else {
+                        out << ",{";
+                    }
+                    out << "\"remote_endpoint\":\"" << receiver->remoteEndpoint << "\",";
+                    out << udpEndpointJson;
+                    out << "\"output_queue_length\":\"" << receiver->outputBuffers.size() << "\"";
+                    out << '}';
+                }
+            }
+            out << ']';
+            out << '}';
+
+            // TODO: optimize to use direct buffer access without copying
+            auto response = std::make_shared<std::string>(out.str());
+
+            boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
+                [this, capture = this->shared_from_this(), response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                    if (e) {
+                        if (server.verboseLogging) {
+                            std::cerr << "status HTTP body write error: " << e.message() << std::endl;
+                        }
+                    }
                 });
         }
 
@@ -454,6 +538,7 @@ private:
         boost::asio::system_timer timeoutTimer;
         BasicServer &server;
         boost::asio::ip::udp::endpoint udpEndpoint;
+        bool processStatus = false;
     };
 
     class MatchStringOrSize {
@@ -500,6 +585,7 @@ private:
     size_t maxHttpClients = 0;
     OutputQueueOverflowAlgorithm overflowAlgorithm = OutputQueueOverflowAlgorithm::ClearQueue;
     bool verboseLogging = true;
+    bool enableStatus = false;
 };
 
 typedef BasicServer<std::allocator<uint8_t>> Server;
