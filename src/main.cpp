@@ -51,7 +51,7 @@ int main(int argc, const char * const argv[]) {
 
     po::options_description description("Options");
     description.add_options()
-        ("help,h", "Help message")
+        ("help,h", "Print help message")
         ("port,p", po::value<uint16_t>(&port)->default_value(5000) , "Port to listen on")
         ("listen,l", po::value<std::string>()->default_value("0.0.0.0")->notifier([&address] (const std::string &token) {
             try {
