@@ -7,15 +7,15 @@ namespace po = boost::program_options;
 
 namespace UdpProxy {
 
-std::istream& operator>>(std::istream &in, Server::WriteQueueOverflowAlgorithm &algorithm)
+std::istream& operator>>(std::istream &in, Server::OutputQueueOverflowAlgorithm &algorithm)
 {
     std::string token;
     in >> token;
 
     if (token == "clearq") {
-        algorithm = UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue;
+        algorithm = UdpProxy::Server::OutputQueueOverflowAlgorithm::ClearQueue;
     } else if (token == "drop") {
-        algorithm = UdpProxy::Server::WriteQueueOverflowAlgorithm::DropData;
+        algorithm = UdpProxy::Server::OutputQueueOverflowAlgorithm::DropData;
     } else {
         throw po::validation_error(po::validation_error::invalid_option_value, "wqoverflow", token);
     }
@@ -23,14 +23,14 @@ std::istream& operator>>(std::istream &in, Server::WriteQueueOverflowAlgorithm &
     return in;
 }
 
-std::ostream& operator<<(std::ostream &out, Server::WriteQueueOverflowAlgorithm algorithm)
+std::ostream& operator<<(std::ostream &out, Server::OutputQueueOverflowAlgorithm algorithm)
 {
     switch (algorithm) {
-    case UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue:
+    case UdpProxy::Server::OutputQueueOverflowAlgorithm::ClearQueue:
         out << "clearq";
         break;
 
-    case UdpProxy::Server::WriteQueueOverflowAlgorithm::DropData:
+    case UdpProxy::Server::OutputQueueOverflowAlgorithm::DropData:
         out << "drop";
         break;
     }
@@ -45,8 +45,8 @@ int main(int argc, const char * const argv[]) {
     uint16_t port;
     size_t maxClients;
     size_t maxUdpDataSize;
-    size_t maxWriteQueueLength;
-    UdpProxy::Server::WriteQueueOverflowAlgorithm overflowAlgorithm;
+    size_t maxOutputQueueLength;
+    UdpProxy::Server::OutputQueueOverflowAlgorithm overflowAlgorithm;
     bool verboseLogging;
 
     po::options_description description("Options");
@@ -62,9 +62,9 @@ int main(int argc, const char * const argv[]) {
         }), "Address to listen on")
         ("clients,c", po::value<size_t>(&maxClients)->default_value(0), "Maximum number of clients to accept (0 = unlimited)")
         ("buffer,B", po::value<size_t>(&maxUdpDataSize)->default_value(4 * 1024), "Maximum UDP packet data size")
-        ("writeq,R", po::value<size_t>(&maxWriteQueueLength)->default_value(1024), "Maximum write queue length per client (0 = unlimited)")
-        ("wqoverflow,o", po::value<UdpProxy::Server::WriteQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue),
-            "Write queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
+        ("outputq,R", po::value<size_t>(&maxOutputQueueLength)->default_value(1024), "Maximum output queue length per client (0 = unlimited)")
+        ("oqoverflow,o", po::value<UdpProxy::Server::OutputQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::Server::OutputQueueOverflowAlgorithm::ClearQueue),
+            "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
         ("verbose,v", "Enable verbose output");
 
     po::variables_map variablesMap;
@@ -89,8 +89,8 @@ int main(int argc, const char * const argv[]) {
 
         server.setMaxHttpClients(maxClients);
         server.setMaxUdpDataSize(maxUdpDataSize);
-        server.setMaxWriteQueueLength(maxWriteQueueLength);
-        server.setWriteQueueOverflowAlgorithm(overflowAlgorithm);
+        server.setMaxOutputQueueLength(maxOutputQueueLength);
+        server.setOutputQueueOverflowAlgorithm(overflowAlgorithm);
         server.setVerboseLogging(verboseLogging);
 
         std::cout << "Running on port " << port << std::endl;

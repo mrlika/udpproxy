@@ -21,7 +21,7 @@ using namespace std::experimental::string_view_literals;
 template <typename Allocator>
 class BasicServer {
 public:
-    enum class WriteQueueOverflowAlgorithm {
+    enum class OutputQueueOverflowAlgorithm {
         ClearQueue,
         DropData
     };
@@ -37,12 +37,12 @@ public:
     boost::asio::system_timer::duration getHeaderReadTimeout() { return headerReadTimeout; }
     void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
     size_t getMaxUdpDataSize() { return maxUdpDataSize; }
-    void setMaxWriteQueueLength(size_t value) { maxWriteQueueLength = value; }
-    size_t getMaxWriteQueueLength() { return maxWriteQueueLength; }
+    void setMaxOutputQueueLength(size_t value) { maxOutputQueueLength = value; }
+    size_t getMaxOutputQueueLength() { return maxOutputQueueLength; }
     void setMaxHttpClients(size_t value) { maxHttpClients = value; }
     size_t getMaxHttpClients() { return maxHttpClients; };
-    void setWriteQueueOverflowAlgorithm(WriteQueueOverflowAlgorithm value) { overflowAlgorithm = value; }
-    WriteQueueOverflowAlgorithm getWriteQueueOverflowAlgorithm() { return overflowAlgorithm; };
+    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { overflowAlgorithm = value; }
+    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() { return overflowAlgorithm; };
     void setVerboseLogging(bool value) { verboseLogging = value; }
     bool getVerboseLogging() { return verboseLogging; }
 
@@ -177,23 +177,23 @@ private:
                         inputBuffer->resize(bytesRead);
 
                         for (auto& receiver : receivers) {
-                            size_t length = receiver->writeBuffers.size();
+                            size_t length = receiver->outputBuffers.size();
 
                             if (length == 0) {
-                                receiver->writeBuffers.emplace_back(inputBuffer);
+                                receiver->outputBuffers.emplace_back(inputBuffer);
                                 receiver->write(*inputBuffer);
-                            } else if ((server.maxWriteQueueLength != 0) && (length >= server.maxWriteQueueLength)) {
+                            } else if ((server.maxOutputQueueLength != 0) && (length >= server.maxOutputQueueLength)) {
                                 switch (server.overflowAlgorithm) {
-                                case WriteQueueOverflowAlgorithm::ClearQueue:
+                                case OutputQueueOverflowAlgorithm::ClearQueue:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: write queue overflow - clearing queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                        std::cerr << "error: output queue overflow - clearing queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
                                     }
-                                    receiver->writeBuffers.resize(1);
+                                    receiver->outputBuffers.resize(1);
                                     break;
 
-                                case WriteQueueOverflowAlgorithm::DropData:
+                                case OutputQueueOverflowAlgorithm::DropData:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: write queue overflow - dropping data for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                        std::cerr << "error: output queue overflow - dropping data for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
                                     }
                                     break;
                                 }
@@ -231,13 +231,13 @@ private:
                                 return;
                             }
 
-                            assert(bufferPointer == writeBuffers.front()->data());
+                            assert(bufferPointer == outputBuffers.front()->data());
                             (void)bytesSent; // Avoid unused parameter warning when asserts disabled
-                            assert(bytesSent == writeBuffers.front()->size());
+                            assert(bytesSent == outputBuffers.front()->size());
 
-                            writeBuffers.pop_front();
-                            if (!writeBuffers.empty()) {
-                                write(*writeBuffers.front());
+                            outputBuffers.pop_front();
+                            if (!outputBuffers.empty()) {
+                                write(*outputBuffers.front());
                             }
                         });
                 }
@@ -246,7 +246,7 @@ private:
                 BasicServer &server;
                 uint64_t inputId;
                 boost::asio::ip::tcp::endpoint remoteEndpoint;
-                std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> writeBuffers;
+                std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
             };
 
             BasicServer &server;
@@ -496,9 +496,9 @@ private:
     size_t maxHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration headerReadTimeout = 1s;
     size_t maxUdpDataSize = 4 * 1024;
-    size_t maxWriteQueueLength = 1024;
+    size_t maxOutputQueueLength = 1024;
     size_t maxHttpClients = 0;
-    WriteQueueOverflowAlgorithm overflowAlgorithm = WriteQueueOverflowAlgorithm::ClearQueue;
+    OutputQueueOverflowAlgorithm overflowAlgorithm = OutputQueueOverflowAlgorithm::ClearQueue;
     bool verboseLogging = true;
 };
 
