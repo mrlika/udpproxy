@@ -1,6 +1,44 @@
 #include <udp_proxy/udp_proxy.h>
 
 #include <boost/program_options.hpp>
+#include <boost/lexical_cast.hpp>
+
+namespace po = boost::program_options;
+
+namespace UdpProxy {
+
+std::istream& operator>>(std::istream &in, Server::WriteQueueOverflowAlgorithm &algorithm)
+{
+    std::string token;
+    in >> token;
+
+    if (token == "clearq") {
+        algorithm = UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue;
+    } else if (token == "drop") {
+        algorithm = UdpProxy::Server::WriteQueueOverflowAlgorithm::DropData;
+    } else {
+        throw po::validation_error(po::validation_error::invalid_option_value, "wqoverflow", token);
+    }
+
+    return in;
+}
+
+std::ostream& operator<<(std::ostream &out, Server::WriteQueueOverflowAlgorithm algorithm)
+{
+    switch (algorithm) {
+    case UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue:
+        out << "clearq";
+        break;
+
+    case UdpProxy::Server::WriteQueueOverflowAlgorithm::DropData:
+        out << "drop";
+        break;
+    }
+
+    return out;
+}
+
+}
 
 int main(int argc, const char * const argv[]) {
     boost::asio::ip::address address;
@@ -8,23 +46,25 @@ int main(int argc, const char * const argv[]) {
     size_t maxClients;
     size_t maxUdpDataSize;
     size_t maxWriteQueueLength;
+    UdpProxy::Server::WriteQueueOverflowAlgorithm overflowAlgorithm;
     bool verboseLogging;
 
-    namespace po = boost::program_options;
     po::options_description description("Options");
     description.add_options()
         ("help,h", "Help message")
         ("port,p", po::value<uint16_t>(&port)->default_value(5000) , "Port to listen on")
-        ("listen,l", po::value<std::string>()->default_value("0.0.0.0")->notifier([&address] (const std::string &addressString) {
+        ("listen,l", po::value<std::string>()->default_value("0.0.0.0")->notifier([&address] (const std::string &token) {
             try {
-                address = boost::asio::ip::address::from_string(addressString);
+                address = boost::asio::ip::address::from_string(token);
             } catch (const boost::system::system_error&) {
-                throw po::error("the argument ('" + addressString + "') for option '--listen' is invalid");
+                throw po::validation_error(po::validation_error::invalid_option_value, "listen", token);
             }
         }), "Address to listen on")
         ("clients,c", po::value<size_t>(&maxClients)->default_value(0), "Maximum number of clients to accept (0 = unlimited)")
         ("buffer,B", po::value<size_t>(&maxUdpDataSize)->default_value(4 * 1024), "Maximum UDP packet data size")
         ("writeq,R", po::value<size_t>(&maxWriteQueueLength)->default_value(1024), "Maximum write queue length per client (0 = unlimited)")
+        ("wqoverflow,o", po::value<UdpProxy::Server::WriteQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::Server::WriteQueueOverflowAlgorithm::ClearQueue),
+            "Write queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
         ("verbose,v", "Enable verbose output");
 
     po::variables_map variablesMap;
@@ -50,6 +90,7 @@ int main(int argc, const char * const argv[]) {
         server.setMaxHttpClients(maxClients);
         server.setMaxUdpDataSize(maxUdpDataSize);
         server.setMaxWriteQueueLength(maxWriteQueueLength);
+        server.setWriteQueueOverflowAlgorithm(overflowAlgorithm);
         server.setVerboseLogging(verboseLogging);
 
         std::cout << "Running on port " << port << std::endl;

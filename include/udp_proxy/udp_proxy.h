@@ -21,6 +21,11 @@ using namespace std::experimental::string_view_literals;
 template <typename Allocator>
 class BasicServer {
 public:
+    enum class WriteQueueOverflowAlgorithm {
+        ClearQueue,
+        DropData
+    };
+
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : acceptor(ioService, endpoint), udpServer(*this) {
         startAccept();
@@ -36,6 +41,8 @@ public:
     size_t getMaxWriteQueueLength() { return maxWriteQueueLength; }
     void setMaxHttpClients(size_t value) { maxHttpClients = value; }
     size_t getMaxHttpClients() { return maxHttpClients; };
+    void setWriteQueueOverflowAlgorithm(WriteQueueOverflowAlgorithm value) { overflowAlgorithm = value; }
+    WriteQueueOverflowAlgorithm getWriteQueueOverflowAlgorithm() { return overflowAlgorithm; };
     void setVerboseLogging(bool value) { verboseLogging = value; }
     bool getVerboseLogging() { return verboseLogging; }
 
@@ -59,7 +66,7 @@ private:
                 if ((maxHttpClients == 0) || (clientsCounter < maxHttpClients)) {
                     HttpHeaderReader::read(socket, *this);
                 } else if (verboseLogging) {
-                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint().address() << std::endl;
+                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint().address() << ':' << socket->remote_endpoint().port() << std::endl;
                 }
             } else {
                 std::cerr << "TCP accept error: " << e.message() << std::endl;
@@ -173,13 +180,24 @@ private:
                             size_t length = receiver->writeBuffers.size();
 
                             if (length == 0) {
+                                receiver->writeBuffers.emplace_back(inputBuffer);
                                 receiver->write(*inputBuffer);
                             } else if ((server.maxWriteQueueLength != 0) && (length >= server.maxWriteQueueLength)) {
-                                std::cerr << "error: write queue limit reached - cleaning queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
-                                receiver->writeBuffers.resize(1);
-                            }
+                                switch (server.overflowAlgorithm) {
+                                case WriteQueueOverflowAlgorithm::ClearQueue:
+                                    if (server.verboseLogging) {
+                                        std::cerr << "error: write queue overflow - clearing queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                    }
+                                    receiver->writeBuffers.resize(1);
+                                    break;
 
-                            receiver->writeBuffers.emplace_back(inputBuffer);
+                                case WriteQueueOverflowAlgorithm::DropData:
+                                    if (server.verboseLogging) {
+                                        std::cerr << "error: write queue overflow - dropping data for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                    }
+                                    break;
+                                }
+                            }
                         }
 
                         receiveUdp();
@@ -480,6 +498,7 @@ private:
     size_t maxUdpDataSize = 4 * 1024;
     size_t maxWriteQueueLength = 1024;
     size_t maxHttpClients = 0;
+    WriteQueueOverflowAlgorithm overflowAlgorithm = WriteQueueOverflowAlgorithm::ClearQueue;
     bool verboseLogging = true;
 };
 
