@@ -48,6 +48,8 @@ int main(int argc, const char * const argv[]) {
     bool verboseLogging;
     bool enableStatus;
 
+    std::cout << UdpProxy::SERVER_NAME << std::endl;
+
     po::options_description description("Options");
     description.add_options()
         ("help,h", "Print help message")

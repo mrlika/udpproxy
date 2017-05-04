@@ -19,6 +19,10 @@ using boost::asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
+constexpr std::tuple<unsigned, unsigned, unsigned> VERSION {0, 1, 0};
+constexpr std::experimental::string_view SERVER_NAME = "udp-proxy 0.1.0"sv;
+#define UDPPROXY_SERVER_NAME_DEFINE "udp-proxy 0.1.0"
+
 enum class OutputQueueOverflowAlgorithm {
     ClearQueue,
     DropData
@@ -141,7 +145,7 @@ private:
 
             static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
                 "HTTP/1.1 200 OK\r\n"
-                "Server: udp-proxy\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: application/octet-stream\r\n"
                 "\r\n"sv;
 
@@ -553,7 +557,7 @@ private:
 
                         static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
                             "HTTP/1.1 200 OK\r\n"
-                            "Server: udp-proxy\r\n"
+                            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                             "Content-Type: application/json\r\n"
                             "\r\n"sv;
 
@@ -685,5 +689,7 @@ private:
 };
 
 typedef BasicServer<std::allocator<uint8_t>> Server;
+
+#undef UDPPROXY_SERVER_NAME_DEFINE
 
 }
