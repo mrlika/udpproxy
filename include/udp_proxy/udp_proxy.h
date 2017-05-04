@@ -41,10 +41,6 @@ public:
         readClients();
     }
 
-    ~BasicServer() {
-        std::cout << "~BasicServer" << std::endl;
-    }
-
     void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
     size_t getMaxHeaderSize() { return maxHeaderSize; }
     void setHeaderReadTimeout(boost::asio::system_timer::duration value) { headerReadTimeout = value; }
