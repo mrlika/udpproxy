@@ -28,13 +28,13 @@ public:
     };
 
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint), udpServer(*this), receiversReadTimer(ioService) {
-        static constexpr size_t RECEIVER_READ_BUFFER_SIZE = 1024;
+            : acceptor(ioService, endpoint), udpServer(*this), clientsReadTimer(ioService) {
+        static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
 
-        receiversReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(RECEIVER_READ_BUFFER_SIZE);
+        clientsReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(CLIENT_READ_BUFFER_SIZE);
 
         startAccept();
-        readReceivers();
+        readClients();
     }
 
     void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
@@ -66,33 +66,33 @@ private:
         explicit ServerError(const char *message) : std::runtime_error(message) {}
     };
 
-    void readReceivers() {
+    void readClients() {
         // Slowly read clients' sockets to detect disconnected ones
 
         static constexpr boost::asio::system_timer::duration CLIENT_READ_PERIOD = 5s;
 
-        receiversReadTimer.expires_from_now(CLIENT_READ_PERIOD);
-        receiversReadTimer.async_wait([this] (const boost::system::error_code &/*e*/) {
+        clientsReadTimer.expires_from_now(CLIENT_READ_PERIOD);
+        clientsReadTimer.async_wait([this] (const boost::system::error_code &/*e*/) {
             for (auto& udpInput : udpServer.udpInputs) {
-                for (auto& receiver : udpInput.second->receivers) {
-                    if (!receiver->readSomeDone) {
+                for (auto& client : udpInput.second->clients) {
+                    if (!client->readSomeDone) {
                         continue;
                     }
 
-                    receiver->readSomeDone = false;
-                    receiver->socket->async_read_some(boost::asio::buffer(receiversReadBuffer->data(), receiversReadBuffer->size()),
-                        [this, receiver = receiver] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
+                    client->readSomeDone = false;
+                    client->socket->async_read_some(boost::asio::buffer(clientsReadBuffer->data(), clientsReadBuffer->size()),
+                        [this, client = client] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
                             if (e) {
                                 if (verboseLogging) {
-                                    std::cerr << "error reading client " << receiver->remoteEndpoint << ": " << e.message() << std::endl;
+                                    std::cerr << "error reading client " << client->remoteEndpoint << ": " << e.message() << std::endl;
                                 }
-                                udpServer.removeUdpToHttpReceiver(receiver->inputId, receiver->socket);
+                                udpServer.removeUdpToHttpClient(client->inputId, client->socket);
                             }
                         });
                 }
             }
 
-            readReceivers();
+            readClients();
         });
     }
 
@@ -117,7 +117,7 @@ private:
     struct UdpServer {
         UdpServer(BasicServer &server) noexcept: server(server) {}
 
-        void addUdpToHttpReceiver(std::shared_ptr<tcp::socket> &receiverSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
+        void addUdpToHttpClient(std::shared_ptr<tcp::socket> &clientSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
             uint64_t inputId = getEndpointId(udpEndpoint);
 
             auto udpInputIterator = udpInputs.find(inputId);
@@ -145,13 +145,13 @@ private:
                 "Content-Type: application/octet-stream\r\n"
                 "\r\n"sv;
 
-            boost::asio::async_write(*receiverSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-                [this, receiverSocket = receiverSocket, inputId] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+            boost::asio::async_write(*clientSocket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
+                [this, clientSocket = clientSocket, inputId] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                     if (e) {
                         if (server.verboseLogging) {
                             std::cerr << "HTTP header write error: " << e.message() << std::endl;
                         }
-                        removeUdpToHttpReceiver(inputId, receiverSocket);
+                        removeUdpToHttpClient(inputId, clientSocket);
                         return;
                     }
 
@@ -161,7 +161,7 @@ private:
                     }
                 });
 
-            udpInput->receivers.emplace_back(std::make_shared<typename UdpInput::Receiver>(receiverSocket, server, inputId));
+            udpInput->clients.emplace_back(std::make_shared<typename UdpInput::Client>(clientSocket, server, inputId));
         }
 
         struct UdpInput : public std::enable_shared_from_this<UdpServer::UdpInput> {
@@ -231,24 +231,24 @@ private:
 
                         inputBuffer->resize(bytesRead);
 
-                        for (auto& receiver : receivers) {
-                            size_t length = receiver->outputBuffers.size();
+                        for (auto& client : clients) {
+                            size_t length = client->outputBuffers.size();
 
                             if (length == 0) {
-                                receiver->outputBuffers.emplace_back(inputBuffer);
-                                receiver->write(*inputBuffer);
+                                client->outputBuffers.emplace_back(inputBuffer);
+                                client->write(*inputBuffer);
                             } else if ((server.maxOutputQueueLength != 0) && (length >= server.maxOutputQueueLength)) {
                                 switch (server.overflowAlgorithm) {
                                 case OutputQueueOverflowAlgorithm::ClearQueue:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - clearing queue for " << receiver->remoteEndpoint << std::endl;
+                                        std::cerr << "error: output queue overflow - clearing queue for " << client->remoteEndpoint << std::endl;
                                     }
-                                    receiver->outputBuffers.resize(1);
+                                    client->outputBuffers.resize(1);
                                     break;
 
                                 case OutputQueueOverflowAlgorithm::DropData:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - dropping data for " << receiver->remoteEndpoint << std::endl;
+                                        std::cerr << "error: output queue overflow - dropping data for " << client->remoteEndpoint << std::endl;
                                     }
                                     break;
                                 }
@@ -259,8 +259,8 @@ private:
                     });
             }
 
-            struct Receiver : public std::enable_shared_from_this<UdpInput::Receiver> {
-                Receiver(std::shared_ptr<tcp::socket> &socket, BasicServer &server, uint64_t inputId) noexcept
+            struct Client : public std::enable_shared_from_this<UdpInput::Client> {
+                Client(std::shared_ptr<tcp::socket> &socket, BasicServer &server, uint64_t inputId) noexcept
                         : socket(socket), server(server), inputId(inputId), remoteEndpoint(socket->remote_endpoint()) {
                     if (server.verboseLogging) {
                         std::cerr << "new HTTP client: " << remoteEndpoint << std::endl;
@@ -268,7 +268,7 @@ private:
                     server.clientsCounter++;
                 }
 
-                ~Receiver() noexcept {
+                ~Client() noexcept {
                     if (server.verboseLogging) {
                         std::cerr << "remove HTTP client: " << remoteEndpoint << std::endl;
                     }
@@ -299,7 +299,7 @@ private:
                                 if (server.verboseLogging) {
                                     std::cerr << "HTTP write error: " << e.message() << std::endl;
                                 }
-                                server.udpServer.removeUdpToHttpReceiver(inputId, socket);
+                                server.udpServer.removeUdpToHttpClient(inputId, socket);
                                 return;
                             }
 
@@ -329,7 +329,7 @@ private:
 
             BasicServer &server;
             uint64_t id;
-            std::list<std::shared_ptr<UdpInput::Receiver>> receivers;
+            std::list<std::shared_ptr<UdpInput::Client>> clients;
             udp::socket udpSocket;
             udp::endpoint senderEndpoint;
             udp::endpoint udpEndpoint;
@@ -344,33 +344,33 @@ private:
             return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
         }
 
-        void removeUdpToHttpReceiver(uint64_t inputId, const std::shared_ptr<tcp::socket> &receiverSocket) {
+        void removeUdpToHttpClient(uint64_t inputId, const std::shared_ptr<tcp::socket> &clientSocket) {
             auto udpInputIterator = udpInputs.find(inputId);
 
             if (udpInputIterator == udpInputs.end()) {
                 return;
             }
 
-            removeUdpToHttpReceiver(udpInputIterator, receiverSocket);
+            removeUdpToHttpClient(udpInputIterator, clientSocket);
         }
 
-        void removeUdpToHttpReceiver(typename std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, const std::shared_ptr<tcp::socket> &receiverSocket) {
-            auto& receivers = udpInputIterator->second->receivers;
-            auto receiverIterator = std::find_if(receivers.begin(), receivers.end(), [&receiverSocket] (const std::shared_ptr<typename UdpInput::Receiver> &receiver) { return receiver->socket == receiverSocket; });
-            removeUdpToHttpReceiver(udpInputIterator, receiverIterator);
+        void removeUdpToHttpClient(typename std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, const std::shared_ptr<tcp::socket> &clientSocket) {
+            auto& clients = udpInputIterator->second->clients;
+            auto clientIterator = std::find_if(clients.begin(), clients.end(), [&clientSocket] (const std::shared_ptr<typename UdpInput::Client> &client) { return client->socket == clientSocket; });
+            removeUdpToHttpClient(udpInputIterator, clientIterator);
         }
 
-        void removeUdpToHttpReceiver(typename std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, typename std::list<std::shared_ptr<typename UdpInput::Receiver>>::iterator receiverIterator) {
-            auto& receivers = udpInputIterator->second->receivers;
+        void removeUdpToHttpClient(typename std::unordered_map<uint32_t, std::shared_ptr<UdpInput>>::iterator udpInputIterator, typename std::list<std::shared_ptr<typename UdpInput::Client>>::iterator clientIterator) {
+            auto& clients = udpInputIterator->second->clients;
 
-            if (receiverIterator != receivers.end()) {
-                auto& receiver = *receiverIterator;
-                receiver->socket->cancel();
-                receiver->socket->close();
-                receivers.erase(receiverIterator);
+            if (clientIterator != clients.end()) {
+                auto& client = *clientIterator;
+                client->socket->cancel();
+                client->socket->close();
+                clients.erase(clientIterator);
             }
 
-            if (receivers.empty()) {
+            if (clients.empty()) {
                 udpInputIterator->second->udpSocket.cancel();
                 udpInputIterator->second->udpSocket.close();
                 udpInputs.erase(udpInputIterator);
@@ -384,9 +384,9 @@ private:
                 return;
             }
 
-            for (auto& receiver : udpInputIterator->second->receivers) {
-                receiver->socket->cancel();
-                receiver->socket->close();
+            for (auto& client : udpInputIterator->second->clients) {
+                client->socket->cancel();
+                client->socket->close();
             }
 
             udpInputIterator->second->udpSocket.cancel();
@@ -569,7 +569,7 @@ private:
                                 writeJsonStatus();
                             });
                     } else {
-                        server.udpServer.addUdpToHttpReceiver(socket, udpEndpoint);
+                        server.udpServer.addUdpToHttpClient(socket, udpEndpoint);
                     }
                 });
         }
@@ -590,14 +590,14 @@ private:
 
                 const auto& udpInput = *(udpInputItem.second);
                 out << "\"endpoint\":\"" << udpInput.udpEndpoint << "\",";
-                out << "\"clients_count\":" << udpInput.receivers.size() << ',';
+                out << "\"clients_count\":" << udpInput.clients.size() << ',';
                 out << "\"bitrate\":" << udpInput.inBitrateKbit << '}';
             }
             out << "],\"clients\":[";
             first = true;
             for (const auto& udpInput : server.udpServer.udpInputs) {
                 std::string udpEndpointJson = "\"udp_endpoint\":\"" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + "\",";
-                for (const auto& receiver : udpInput.second->receivers) {
+                for (const auto& client : udpInput.second->clients) {
                     if (first) {
                         first = false;
                         out << '{';
@@ -605,10 +605,10 @@ private:
                         out << ",{";
                     }
 
-                    out << "\"remote_endpoint\":\"" << receiver->remoteEndpoint << "\",";
+                    out << "\"remote_endpoint\":\"" << client->remoteEndpoint << "\",";
                     out << udpEndpointJson;
-                    out << "\"output_queue_length\":" << receiver->outputBuffers.size() << ',';
-                    out << "\"bitrate\":" << receiver->outBitrateKbit << '}';
+                    out << "\"output_queue_length\":" << client->outputBuffers.size() << ',';
+                    out << "\"bitrate\":" << client->outBitrateKbit << '}';
                 }
             }
             out << "]}";
@@ -671,8 +671,8 @@ private:
     tcp::acceptor acceptor;
     UdpServer udpServer;
     size_t clientsCounter = 0;
-    std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> receiversReadBuffer;
-    boost::asio::system_timer receiversReadTimer;
+    std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> clientsReadBuffer;
+    boost::asio::system_timer clientsReadTimer;
 
     size_t maxHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration headerReadTimeout = 1s;
