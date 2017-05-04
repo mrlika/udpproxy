@@ -69,7 +69,7 @@ private:
                 if ((maxHttpClients == 0) || (clientsCounter < maxHttpClients)) {
                     HttpHeaderReader::read(socket, *this);
                 } else if (verboseLogging) {
-                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint().address() << ':' << socket->remote_endpoint().port() << std::endl;
+                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
                 }
             } else {
                 std::cerr << "TCP accept error: " << e.message() << std::endl;
@@ -147,13 +147,13 @@ private:
                 }
 
                 if (server.verboseLogging) {
-                    std::cerr << "new UDP input: udp://" << udpSocket.local_endpoint().address() << ":" << udpSocket.local_endpoint().port() << std::endl;
+                    std::cerr << "new UDP input: udp://" << udpSocket.local_endpoint() << std::endl;
                 }
             }
 
             ~UdpInput() {
                 if (server.verboseLogging) {
-                    std::cerr << "remove UDP input: " << udpEndpoint.address() << ":" << udpEndpoint.port() << std::endl;
+                    std::cerr << "remove UDP input: " << udpEndpoint << std::endl;
                 }
             }
 
@@ -187,14 +187,14 @@ private:
                                 switch (server.overflowAlgorithm) {
                                 case OutputQueueOverflowAlgorithm::ClearQueue:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - clearing queue for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                        std::cerr << "error: output queue overflow - clearing queue for " << receiver->remoteEndpoint << std::endl;
                                     }
                                     receiver->outputBuffers.resize(1);
                                     break;
 
                                 case OutputQueueOverflowAlgorithm::DropData:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - dropping data for " << receiver->remoteEndpoint.address() << ":" << receiver->remoteEndpoint.port() << std::endl;
+                                        std::cerr << "error: output queue overflow - dropping data for " << receiver->remoteEndpoint << std::endl;
                                     }
                                     break;
                                 }
@@ -209,14 +209,14 @@ private:
                 Receiver(std::shared_ptr<tcp::socket> &socket, BasicServer &server, uint64_t inputId) noexcept
                         : socket(socket), server(server), inputId(inputId), remoteEndpoint(socket->remote_endpoint()) {
                     if (server.verboseLogging) {
-                        std::cerr << "new HTTP client: " << remoteEndpoint.address() << ":" << remoteEndpoint.port() << std::endl;
+                        std::cerr << "new HTTP client: " << remoteEndpoint << std::endl;
                     }
                     server.clientsCounter++;
                 }
 
                 ~Receiver() noexcept {
                     if (server.verboseLogging) {
-                        std::cerr << "remove HTTP client: " << remoteEndpoint.address() << ":" << remoteEndpoint.port() << std::endl;
+                        std::cerr << "remove HTTP client: " << remoteEndpoint << std::endl;
                     }
                     server.clientsCounter--;
                 }
@@ -468,7 +468,7 @@ private:
 
                     if (processStatus) {
                         if (server.verboseLogging) {
-                            std::cerr << "status HTTP client: " << socket->remote_endpoint().address() << ":" << socket->remote_endpoint().port() << std::endl;
+                            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
                         }
 
                         static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
