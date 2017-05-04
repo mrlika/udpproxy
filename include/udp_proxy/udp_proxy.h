@@ -19,14 +19,14 @@ using boost::asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::experimental::string_view_literals;
 
+enum class OutputQueueOverflowAlgorithm {
+    ClearQueue,
+    DropData
+};
+
 template <typename Allocator>
 class BasicServer {
 public:
-    enum class OutputQueueOverflowAlgorithm {
-        ClearQueue,
-        DropData
-    };
-
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : acceptor(ioService, endpoint), udpServer(*this), clientsReadTimer(ioService) {
         static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
