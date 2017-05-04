@@ -28,8 +28,13 @@ public:
     };
 
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint), udpServer(*this) {
+            : acceptor(ioService, endpoint), udpServer(*this), receiversReadTimer(ioService) {
+        static constexpr size_t RECEIVER_READ_BUFFER_SIZE = 1024;
+
+        receiversReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(RECEIVER_READ_BUFFER_SIZE);
+
         startAccept();
+        readReceivers();
     }
 
     void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
@@ -60,6 +65,36 @@ private:
         explicit ServerError(const std::string& message) : std::runtime_error(message) {}
         explicit ServerError(const char *message) : std::runtime_error(message) {}
     };
+
+    void readReceivers() {
+        // Slowly read clients' sockets to detect disconnected ones
+
+        static constexpr boost::asio::system_timer::duration CLIENT_READ_PERIOD = 5s;
+
+        receiversReadTimer.expires_from_now(CLIENT_READ_PERIOD);
+        receiversReadTimer.async_wait([this] (const boost::system::error_code &/*e*/) {
+            for (auto& udpInput : udpServer.udpInputs) {
+                for (auto& receiver : udpInput.second->receivers) {
+                    if (!receiver->readSomeDone) {
+                        continue;
+                    }
+
+                    receiver->readSomeDone = false;
+                    receiver->socket->async_read_some(boost::asio::buffer(receiversReadBuffer->data(), receiversReadBuffer->size()),
+                        [this, receiver = receiver] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
+                            if (e) {
+                                if (verboseLogging) {
+                                    std::cerr << "error reading client " << receiver->remoteEndpoint << ": " << e.message() << std::endl;
+                                }
+                                udpServer.removeUdpToHttpReceiver(receiver->inputId, receiver->socket);
+                            }
+                        });
+                }
+            }
+
+            readReceivers();
+        });
+    }
 
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
@@ -289,6 +324,7 @@ private:
                 std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
                 size_t bytesOut = 0;
                 double outBitrateKbit = 0;
+                bool readSomeDone = true;
             };
 
             BasicServer &server;
@@ -635,6 +671,8 @@ private:
     tcp::acceptor acceptor;
     UdpServer udpServer;
     size_t clientsCounter = 0;
+    std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> receiversReadBuffer;
+    boost::asio::system_timer receiversReadTimer;
 
     size_t maxHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration headerReadTimeout = 1s;
