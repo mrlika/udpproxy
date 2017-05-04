@@ -165,6 +165,23 @@ private:
             }
 
             void receiveUdp() {
+                if (server.enableStatus) {
+                    static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
+
+                    auto now = std::chrono::system_clock::now();
+
+                    if (bitrateCalculationStart == std::chrono::system_clock::time_point::min()) {
+                        bitrateCalculationStart = now;
+                    } else {
+                        auto duration = now - bitrateCalculationStart;
+                        if (duration >= BITRATE_PERIOD) {
+                            inBitrateKbit = 8. * bytesIn / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                            bytesIn = 0;
+                            bitrateCalculationStart = now;
+                        }
+                    }
+                }
+
                 inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(server.maxUdpDataSize);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
@@ -174,6 +191,8 @@ private:
                             server.udpServer.removeUdpInput(id);
                             return;
                         }
+
+                        bytesIn += bytesRead;
 
                         inputBuffer->resize(bytesRead);
 
@@ -222,6 +241,23 @@ private:
                 }
 
                 void write(std::vector<uint8_t, InputBuffersAllocator> &buffer) {
+                    if (server.enableStatus) {
+                        static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
+
+                        auto now = std::chrono::system_clock::now();
+
+                        if (bitrateCalculationStart == std::chrono::system_clock::time_point::min()) {
+                            bitrateCalculationStart = now;
+                        } else {
+                            auto duration = now - bitrateCalculationStart;
+                            if (duration >= BITRATE_PERIOD) {
+                                outBitrateKbit = 8. * bytesOut / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+                                bytesOut = 0;
+                                bitrateCalculationStart = now;
+                            }
+                        }
+                    }
+
                     boost::asio::async_write(*socket, boost::asio::buffer(buffer.data(), buffer.size()),
                         [this, capture = this->shared_from_this(), bufferPointer = buffer.data()] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (e) {
@@ -231,6 +267,8 @@ private:
                                 server.udpServer.removeUdpToHttpReceiver(inputId, socket);
                                 return;
                             }
+
+                            bytesOut += bytesSent;
 
                             assert(bufferPointer == outputBuffers.front()->data());
                             (void)bytesSent; // Avoid unused parameter warning when asserts disabled
@@ -248,6 +286,9 @@ private:
                 uint64_t inputId;
                 boost::asio::ip::tcp::endpoint remoteEndpoint;
                 std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
+                std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
+                size_t bytesOut = 0;
+                double outBitrateKbit = 0;
             };
 
             BasicServer &server;
@@ -258,6 +299,9 @@ private:
             udp::endpoint udpEndpoint;
             std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> inputBuffer;
             bool isStarted = false;
+            std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
+            size_t bytesIn = 0;
+            double inBitrateKbit = 0;
         };
 
         static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) {
@@ -419,7 +463,7 @@ private:
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
 
                         if (match.empty()) {
-                            throw ServerError("wrong URI");
+                            throw ServerError("wrong URI: " + std::string(uri));
                         }
 
                         boost::asio::ip::address address;
@@ -498,9 +542,23 @@ private:
             // TODO: optimize JSON output
             std::ostringstream out;
 
-            out << '{';
-            out << "\"clients\":[";
+            out << "{\"inputs\":[";
             bool first = true;
+            for (const auto& udpInputItem : server.udpServer.udpInputs) {
+                if (first) {
+                    first = false;
+                    out << '{';
+                } else {
+                    out << ",{";
+                }
+
+                const auto& udpInput = *(udpInputItem.second);
+                out << "\"endpoint\":\"" << udpInput.udpEndpoint << "\",";
+                out << "\"clients_count\":" << udpInput.receivers.size() << ',';
+                out << "\"bitrate\":" << udpInput.inBitrateKbit << '}';
+            }
+            out << "],\"clients\":[";
+            first = true;
             for (const auto& udpInput : server.udpServer.udpInputs) {
                 std::string udpEndpointJson = "\"udp_endpoint\":\"" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + "\",";
                 for (const auto& receiver : udpInput.second->receivers) {
@@ -510,14 +568,14 @@ private:
                     } else {
                         out << ",{";
                     }
+
                     out << "\"remote_endpoint\":\"" << receiver->remoteEndpoint << "\",";
                     out << udpEndpointJson;
-                    out << "\"output_queue_length\":\"" << receiver->outputBuffers.size() << "\"";
-                    out << '}';
+                    out << "\"output_queue_length\":" << receiver->outputBuffers.size() << ',';
+                    out << "\"bitrate\":" << receiver->outBitrateKbit << '}';
                 }
             }
-            out << ']';
-            out << '}';
+            out << "]}";
 
             // TODO: optimize to use direct buffer access without copying
             auto response = std::make_shared<std::string>(out.str());
