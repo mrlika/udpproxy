@@ -179,7 +179,6 @@ private:
                 renewMulticastSubscriptionTimer.expires_from_now(server.renewMulticastSubscriptionInterval);
                 renewMulticastSubscriptionTimer.async_wait([this, reference = std::weak_ptr<UdpInput>(this->shared_from_this())] (const boost::system::error_code &e) {
                     if (reference.expired()) {
-                        assert(e == boost::system::errc::operation_canceled);
                         return;
                     } else if (e) {
                         return;
@@ -236,7 +235,6 @@ private:
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
                     [this, reference = std::weak_ptr<UdpInput>(this->shared_from_this()), buffer = inputBuffer] (const boost::system::error_code &e, std::size_t bytesRead) {
                         if (reference.expired()) {
-                            assert(e == boost::system::errc::operation_canceled);
                             return;
                         }
 
@@ -321,7 +319,6 @@ private:
                     boost::asio::async_write(*socket, boost::asio::buffer(buffer->data(), buffer->size()),
                         [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (reference.expired()) {
-                                assert(e == boost::system::errc::operation_canceled);
                                 return;
                             }
 
@@ -355,7 +352,6 @@ private:
                     socket->async_read_some(boost::asio::buffer(server.clientsReadBuffer->data(), server.clientsReadBuffer->size()),
                         [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = server.clientsReadBuffer] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
                             if (reference.expired()) {
-                                assert(e == boost::system::errc::operation_canceled);
                                 return;
                             }
 
@@ -379,7 +375,6 @@ private:
                     boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
                         [this, reference = std::weak_ptr<Client>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                             if (reference.expired()) {
-                                assert(e == boost::system::errc::operation_canceled);
                                 return;
                             }
 
@@ -469,7 +464,6 @@ private:
             timeoutTimer.expires_from_now(server.headerReadTimeout);
             timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
-                    assert(e == boost::system::errc::operation_canceled);
                     return;
                 }
 
@@ -482,7 +476,6 @@ private:
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
-                        assert(e == boost::system::errc::operation_canceled);
                         return;
                     }
 
@@ -517,7 +510,6 @@ private:
                 UntilFunction(MatchStringOrSize("\r\n", server.maxHeaderSize - bytesRead - "\r\n"sv.length())),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
-                        assert(e == boost::system::errc::operation_canceled);
                         return;
                     }
 
@@ -600,7 +592,6 @@ private:
                 UntilFunction(MatchStringOrSize("\r\n\r\n", server.maxHeaderSize - bytesRead)),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t /*size*/) {
                     if (reference.expired()) {
-                        assert(e == boost::system::errc::operation_canceled);
                         return;
                     }
 
@@ -679,7 +670,6 @@ private:
             boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                     if (reference.expired()) {
-                        assert(e == boost::system::errc::operation_canceled);
                         return;
                     }
 
@@ -695,7 +685,6 @@ private:
                     boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
                         [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                             if (reference.expired()) {
-                                assert(e == boost::system::errc::operation_canceled);
                                 return;
                             }
 
