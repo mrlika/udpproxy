@@ -48,6 +48,7 @@ int main(int argc, const char * const argv[]) {
     bool verboseLogging;
     bool enableStatus;
     unsigned renewMulitcastSubscriptionInterval;
+    boost::asio::ip::address multicastInterfaceAddress;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
 
@@ -69,7 +70,19 @@ int main(int argc, const char * const argv[]) {
             "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
         ("verbose,v", "Enable verbose output")
         ("status,S", "Enable /status URL")
-        ("renew,M", po::value<unsigned>(&renewMulitcastSubscriptionInterval)->default_value(0), "renew multicast subscription interval in seconds (0 = disable)");
+        ("renew,M", po::value<unsigned>(&renewMulitcastSubscriptionInterval)->default_value(0), "renew multicast subscription interval in seconds (0 = disable)")
+        ("multicastif,m", po::value<std::string>()->default_value("0.0.0.0")->notifier([&multicastInterfaceAddress] (const std::string &token) {
+            try {
+                multicastInterfaceAddress = boost::asio::ip::address::from_string(token);
+            } catch (const boost::system::system_error&) {
+                throw po::validation_error(po::validation_error::invalid_option_value, "multicastif", token);
+            }
+
+            if (!multicastInterfaceAddress.is_v4()) {
+                throw po::validation_error(po::validation_error::invalid_option_value, "multicastif", token);
+            }
+
+        }), "Multicast interface IP address");
 
     po::variables_map variablesMap;
     try {
@@ -99,6 +112,7 @@ int main(int argc, const char * const argv[]) {
         server.setVerboseLogging(verboseLogging);
         server.setEnableStatus(enableStatus);
         server.setRenewMulticastSubscriptionInterval(std::chrono::seconds(renewMulitcastSubscriptionInterval));
+        server.setMulticastInterfaceAddress(multicastInterfaceAddress);
 
         std::cout << "Running on port " << port << std::endl;
         ioService.run();

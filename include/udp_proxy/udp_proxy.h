@@ -59,6 +59,8 @@ public:
     bool getEnableStatus() { return enableStatus; }
     void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { renewMulticastSubscriptionInterval = value; }
     boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() { return renewMulticastSubscriptionInterval; }
+    void setMulticastInterfaceAddress(boost::asio::ip::address value) { multicastInterfaceAddress = value; }
+    boost::asio::ip::address getMulticastInterfaceAddress() { return multicastInterfaceAddress; }
 
 private:
     typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<uint8_t>> InputBuffersAllocator;
@@ -150,20 +152,20 @@ private:
             UdpInput(BasicServer &server, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
                     : server(server), id(id), udpSocket(server.acceptor.get_io_service()),
                       udpEndpoint(udpEndpoint), renewMulticastSubscriptionTimer(server.acceptor.get_io_service()) {
-                udpSocket.open(udpEndpoint.protocol());
-
                 try {
-                    udpSocket.bind(udpEndpoint);
+                    udpSocket.open(udpEndpoint.protocol());
                     udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
+                    udpSocket.bind(udpEndpoint);
+
                     if (udpEndpoint.address().is_multicast()) {
-                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
+                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address().to_v4(), server.multicastInterfaceAddress.to_v4()));
                     }
                 } catch (const boost::system::system_error &e) {
                     throw ServerError(e.what());
                 }
 
                 if (server.verboseLogging) {
-                    std::cerr << "new UDP input: udp://" << udpSocket.local_endpoint() << std::endl;
+                    std::cerr << "new UDP input: udp://" << udpEndpoint << std::endl;
                 }
             }
 
@@ -203,7 +205,7 @@ private:
                 if (!isStarted) {
                     isStarted = true;
 
-                    if (server.renewMulticastSubscriptionInterval != 0s) {
+                    if (udpEndpoint.address().is_multicast() && (server.renewMulticastSubscriptionInterval != 0s)) {
                         startRenewMulticastSubscription();
                     }
 
@@ -766,6 +768,7 @@ private:
     bool verboseLogging = true;
     bool enableStatus = false;
     boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
+    boost::asio::ip::address multicastInterfaceAddress;
 };
 
 typedef BasicServer<std::allocator<uint8_t>> Server;
