@@ -57,6 +57,8 @@ public:
     bool getVerboseLogging() { return verboseLogging; }
     void setEnableStatus(bool value) { enableStatus = value; }
     bool getEnableStatus() { return enableStatus; }
+    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { renewMulticastSubscriptionInterval = value; }
+    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() { return renewMulticastSubscriptionInterval; }
 
 private:
     typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<uint8_t>> InputBuffersAllocator;
@@ -147,18 +149,17 @@ private:
         struct UdpInput : public std::enable_shared_from_this<UdpServer::UdpInput> {
             UdpInput(BasicServer &server, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
                     : server(server), id(id), udpSocket(server.acceptor.get_io_service()),
-                      udpEndpoint(udpEndpoint) {
+                      udpEndpoint(udpEndpoint), renewMulticastSubscriptionTimer(server.acceptor.get_io_service()) {
                 udpSocket.open(udpEndpoint.protocol());
 
                 try {
                     udpSocket.bind(udpEndpoint);
+                    udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
+                    if (udpEndpoint.address().is_multicast()) {
+                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
+                    }
                 } catch (const boost::system::system_error &e) {
                     throw ServerError(e.what());
-                }
-
-                udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
-                if (udpEndpoint.address().is_multicast()) {
-                    udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
                 }
 
                 if (server.verboseLogging) {
@@ -172,9 +173,40 @@ private:
                 }
             }
 
+            void startRenewMulticastSubscription() {
+                renewMulticastSubscriptionTimer.expires_from_now(server.renewMulticastSubscriptionInterval);
+                renewMulticastSubscriptionTimer.async_wait([this, reference = std::weak_ptr<UdpInput>(this->shared_from_this())] (const boost::system::error_code &e) {
+                    if (reference.expired()) {
+                        assert(e == boost::system::errc::operation_canceled);
+                        return;
+                    } else if (e) {
+                        return;
+                    }
+
+                    try {
+                        if (server.verboseLogging) {
+                            std::cerr << "renew multicast subscription for " << udpEndpoint << std::endl;
+                        }
+                        udpSocket.set_option(boost::asio::ip::multicast::leave_group(udpEndpoint.address()));
+                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
+                    } catch (const boost::system::system_error &e) {
+                        std::cerr << "error: failed to renew multicast subscription for " << udpEndpoint << ": " << e.what() << std::endl;
+                        server.udpServer.udpInputs.erase(id);
+                        return;
+                    }
+
+                    startRenewMulticastSubscription();
+                });
+            }
+
             void start() {
                 if (!isStarted) {
                     isStarted = true;
+
+                    if (server.renewMulticastSubscriptionInterval != 0s) {
+                        startRenewMulticastSubscription();
+                    }
+
                     receiveUdp();
                 }
             }
@@ -386,6 +418,7 @@ private:
             std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
             size_t bytesIn = 0;
             double inBitrateKbit = 0;
+            boost::asio::system_timer renewMulticastSubscriptionTimer;
         };
 
         static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) {
@@ -732,6 +765,7 @@ private:
     OutputQueueOverflowAlgorithm overflowAlgorithm = OutputQueueOverflowAlgorithm::ClearQueue;
     bool verboseLogging = true;
     bool enableStatus = false;
+    boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
 };
 
 typedef BasicServer<std::allocator<uint8_t>> Server;

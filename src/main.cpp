@@ -47,6 +47,7 @@ int main(int argc, const char * const argv[]) {
     UdpProxy::OutputQueueOverflowAlgorithm overflowAlgorithm;
     bool verboseLogging;
     bool enableStatus;
+    unsigned renewMulitcastSubscriptionInterval;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
 
@@ -54,7 +55,7 @@ int main(int argc, const char * const argv[]) {
     description.add_options()
         ("help,h", "Print help message")
         ("port,p", po::value<uint16_t>(&port)->default_value(5000) , "Port to listen on")
-        ("listen,l", po::value<std::string>()->default_value("0.0.0.0")->notifier([&address] (const std::string &token) {
+        ("listen,a", po::value<std::string>()->default_value("0.0.0.0")->notifier([&address] (const std::string &token) {
             try {
                 address = boost::asio::ip::address::from_string(token);
             } catch (const boost::system::system_error&) {
@@ -67,7 +68,8 @@ int main(int argc, const char * const argv[]) {
         ("oqoverflow,o", po::value<UdpProxy::OutputQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::OutputQueueOverflowAlgorithm::ClearQueue),
             "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
         ("verbose,v", "Enable verbose output")
-        ("status,S", "Enable /status URL");
+        ("status,S", "Enable /status URL")
+        ("renew,M", po::value<unsigned>(&renewMulitcastSubscriptionInterval)->default_value(0), "renew multicast subscription interval in seconds (0 = disable)");
 
     po::variables_map variablesMap;
     try {
@@ -96,6 +98,7 @@ int main(int argc, const char * const argv[]) {
         server.setOutputQueueOverflowAlgorithm(overflowAlgorithm);
         server.setVerboseLogging(verboseLogging);
         server.setEnableStatus(enableStatus);
+        server.setRenewMulticastSubscriptionInterval(std::chrono::seconds(renewMulitcastSubscriptionInterval));
 
         std::cout << "Running on port " << port << std::endl;
         ioService.run();
