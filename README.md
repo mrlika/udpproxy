@@ -1,2 +1,2 @@
-# udp-proxy
+# udpproxy
 UDP proxy like udpxy

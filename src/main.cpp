@@ -1,4 +1,4 @@
-#include <udp_proxy/udp_proxy.h>
+#include <udpproxy/udpproxy.h>
 
 #include <boost/program_options.hpp>
 #include <boost/lexical_cast.hpp>

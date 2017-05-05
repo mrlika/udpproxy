@@ -16,7 +16,7 @@ if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
 endif()
 
 aux_source_directory(src LIB_SOURCES)
-file(GLOB HEADERS include/udp_proxy/*.h*)
+file(GLOB HEADERS include/udpproxy/*.h*)
 include_directories(include)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out)
