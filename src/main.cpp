@@ -50,6 +50,7 @@ int main(int argc, const char * const argv[]) {
     unsigned renewMulitcastSubscriptionInterval;
     boost::asio::ip::address multicastInterfaceAddress;
     unsigned httpConnectionTimeout;
+    size_t maxHttpHeaderSize;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
 
@@ -65,7 +66,7 @@ int main(int argc, const char * const argv[]) {
             }
         }), "Address to listen on")
         ("clients,c", po::value<size_t>(&maxClients)->default_value(0), "Maximum number of clients to accept (0 = unlimited)")
-        ("buffer,B", po::value<size_t>(&maxUdpDataSize)->default_value(4 * 1024), "Maximum UDP packet data size")
+        ("buffer,B", po::value<size_t>(&maxUdpDataSize)->default_value(4 * 1024), "Maximum UDP packet data size in bytes")
         ("outputq,R", po::value<size_t>(&maxOutputQueueLength)->default_value(1024), "Maximum output queue length per client (0 = unlimited)")
         ("oqoverflow,o", po::value<UdpProxy::OutputQueueOverflowAlgorithm>(&overflowAlgorithm)->default_value(UdpProxy::OutputQueueOverflowAlgorithm::ClearQueue),
             "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
@@ -84,7 +85,8 @@ int main(int argc, const char * const argv[]) {
             }
 
         }), "Multicast interface IP address")
-        ("httptimeout,T", po::value<unsigned>(&httpConnectionTimeout)->default_value(1), "Timeout for HTTP connections in seconds (0 = disable)");
+        ("httptimeout,T", po::value<unsigned>(&httpConnectionTimeout)->default_value(1), "Timeout for HTTP connections in seconds (0 = disable)")
+        ("httpheader,H", po::value<size_t>(&maxHttpHeaderSize)->default_value(4 * 1024), "Maximum input HTTP header size in bytes");
 
     po::variables_map variablesMap;
     try {
@@ -116,6 +118,7 @@ int main(int argc, const char * const argv[]) {
         server.setRenewMulticastSubscriptionInterval(std::chrono::seconds(renewMulitcastSubscriptionInterval));
         server.setMulticastInterfaceAddress(multicastInterfaceAddress);
         server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
+        server.setMaxHttpHeaderSize(maxHttpHeaderSize);
 
         std::cout << "Running on port " << port << std::endl;
         ioService.run();

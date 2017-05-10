@@ -41,8 +41,8 @@ public:
         readClients();
     }
 
-    void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
-    size_t getMaxHeaderSize() { return maxHeaderSize; }
+    void setMaxHttpHeaderSize(size_t value) { maxHttpHeaderSize = value; }
+    size_t getMaxHttpHeaderSize() { return maxHttpHeaderSize; }
     void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpConnectionTimeout = value; }
     boost::asio::system_timer::duration getHttpConnectionTimeout() { return httpConnectionTimeout; }
     void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
@@ -475,7 +475,7 @@ private:
 
     struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
         HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, BasicServer &server)
-                : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHeaderSize)),
+                : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()), server(server) {
             server.clientsCounter++;
         }
@@ -575,7 +575,7 @@ private:
             static constexpr std::experimental::string_view STATUS_URI = "/status"sv;
 
             boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize("\r\n", server.maxHeaderSize - bytesRead - "\r\n"sv.length())),
+                UntilFunction(MatchStringOrSize("\r\n", server.maxHttpHeaderSize - bytesRead - "\r\n"sv.length())),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
@@ -698,7 +698,7 @@ private:
 
         void readRestOfHttpHeader() {
             boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize("\r\n\r\n", server.maxHeaderSize - bytesRead)),
+                UntilFunction(MatchStringOrSize("\r\n\r\n", server.maxHttpHeaderSize - bytesRead)),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t /*size*/) {
                     if (reference.expired()) {
                         return;
@@ -872,7 +872,7 @@ private:
     std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> clientsReadBuffer;
     boost::asio::system_timer clientsReadTimer;
 
-    size_t maxHeaderSize = 4 * 1024;
+    size_t maxHttpHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration httpConnectionTimeout = 1s;
     size_t maxUdpDataSize = 4 * 1024;
     size_t maxOutputQueueLength = 1024;
