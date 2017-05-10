@@ -100,8 +100,8 @@ int main(int argc, const char * const argv[]) {
         return 0;
     }
 
-    verboseLogging = variablesMap.count("verbose");
-    enableStatus = variablesMap.count("status");
+    verboseLogging = (variablesMap.count("verbose") != 0);
+    enableStatus = (variablesMap.count("status") != 0);
 
     try {
         boost::asio::io_service ioService;
