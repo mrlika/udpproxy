@@ -1,7 +1,6 @@
 #include <udpproxy/udpproxy.h>
 
 #include <boost/program_options.hpp>
-#include <boost/lexical_cast.hpp>
 
 namespace po = boost::program_options;
 
