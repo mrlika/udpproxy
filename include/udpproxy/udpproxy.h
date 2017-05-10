@@ -470,7 +470,7 @@ private:
             }
         }
 
-        std::unordered_map<uint32_t, std::shared_ptr<UdpInput>> udpInputs;
+        std::unordered_map<uint64_t, std::shared_ptr<UdpInput>> udpInputs;
         BasicServer &server;
     };
 
