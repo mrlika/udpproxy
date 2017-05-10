@@ -254,7 +254,9 @@ private:
                             if (length == 0) {
                                 client->outputBuffers.emplace_back(inputBuffer);
                                 client->writeData(inputBuffer);
-                            } else if ((server.maxOutputQueueLength != 0) && (length >= server.maxOutputQueueLength)) {
+                            } else if ((server.maxOutputQueueLength == 0) || (length < server.maxOutputQueueLength)) {
+                                client->outputBuffers.emplace_back(inputBuffer);
+                            } else {
                                 switch (server.overflowAlgorithm) {
                                 case OutputQueueOverflowAlgorithm::ClearQueue:
                                     if (server.verboseLogging) {
