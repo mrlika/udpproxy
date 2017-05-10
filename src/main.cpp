@@ -119,7 +119,10 @@ int main(int argc, const char * const argv[]) {
         server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
         server.setMaxHttpHeaderSize(maxHttpHeaderSize);
 
+        server.runAsync();
+
         std::cout << "Running on port " << port << std::endl;
+
         ioService.run();
     } catch (const std::exception &e) {
         std::cerr << e.what() << std::endl;

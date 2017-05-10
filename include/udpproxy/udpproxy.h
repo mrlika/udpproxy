@@ -32,9 +32,10 @@ template <typename Allocator, bool SendHttpResponses>
 class BasicServer {
 public:
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint), udpServer(*this), clientsReadTimer(ioService) {
-        static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
+            : acceptor(ioService, endpoint), udpServer(*this), clientsReadTimer(ioService) {}
 
+    void runAsync() {
+        static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
         clientsReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(CLIENT_READ_BUFFER_SIZE);
 
         startAccept();
