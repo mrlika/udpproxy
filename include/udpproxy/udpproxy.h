@@ -289,14 +289,14 @@ private:
                                 switch (server.overflowAlgorithm) {
                                 case OutputQueueOverflowAlgorithm::ClearQueue:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - clearing queue for " << client->remoteEndpoint << std::endl;
+                                        std::cerr << "error: output queue overflow - clearing queue for " << client->remoteEndpoint << " (udp://" << udpEndpoint << ")" << std::endl;
                                     }
                                     client->outputBuffers.resize(1);
                                     break;
 
                                 case OutputQueueOverflowAlgorithm::DropData:
                                     if (server.verboseLogging) {
-                                        std::cerr << "error: output queue overflow - dropping data for " << client->remoteEndpoint << std::endl;
+                                        std::cerr << "error: output queue overflow - dropping data for " << client->remoteEndpoint << " (udp://" << udpEndpoint << ")" << std::endl;
                                     }
                                     break;
                                 }
