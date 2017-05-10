@@ -709,7 +709,6 @@ private:
                     }
 
                     if (processStatus) {
-                        timeoutTimer.cancel();
                         this->buffer.reset();
 
                         if (server.verboseLogging) {
