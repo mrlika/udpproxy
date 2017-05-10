@@ -83,7 +83,6 @@ int main(int argc, const char * const argv[]) {
             if (!multicastInterfaceAddress.is_v4()) {
                 throw po::validation_error(po::validation_error::invalid_option_value, "multicastif", token);
             }
-
         }), "Multicast interface IP address")
         ("httptimeout,T", po::value<unsigned>(&httpConnectionTimeout)->default_value(1), "Timeout for HTTP connections in seconds (0 = disable)")
         ("httpheader,H", po::value<size_t>(&maxHttpHeaderSize)->default_value(4 * 1024), "Maximum input HTTP header size in bytes");
