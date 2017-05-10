@@ -150,7 +150,7 @@ private:
     }
 
     struct UdpServer {
-        UdpServer(BasicServer &server) noexcept: server(server) {}
+        explicit UdpServer(BasicServer &server) noexcept: server(server) {}
 
         void addUdpToHttpClient(std::shared_ptr<tcp::socket> &clientSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
             uint64_t inputId = getEndpointId(udpEndpoint);
