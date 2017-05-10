@@ -268,7 +268,7 @@ private:
                         }
 
                         if (e) {
-                            std::cerr << "UDP socket receive error: " << e.message() << std::endl;
+                            std::cerr << "UDP socket receive error for " << udpEndpoint << ": " << e.message() << std::endl;
                             server.udpServer.udpInputs.erase(id);
                             return;
                         }
@@ -355,7 +355,7 @@ private:
 
                             if (e) {
                                 if (server.verboseLogging) {
-                                    std::cerr << "HTTP write error: " << e.message() << std::endl;
+                                    std::cerr << "HTTP write error for " << remoteEndpoint << ": " << e.message() << std::endl;
                                 }
                                 server.udpServer.removeUdpToHttpClient(inputId, socket);
                                 return;
@@ -412,7 +412,7 @@ private:
 
                             if (e) {
                                 if (server.verboseLogging) {
-                                    std::cerr << "HTTP header write error: " << e.message() << std::endl;
+                                    std::cerr << "HTTP header write error for " << remoteEndpoint << ": " << e.message() << std::endl;
                                 }
 
                                 server.udpServer.removeUdpToHttpClient(inputId, socket);
@@ -730,7 +730,7 @@ private:
                         try {
                             server.udpServer.addUdpToHttpClient(socket, udpEndpoint);
                         } catch (const ServerError &e) {
-                            std::cerr << "UDP socket error: " << e.what() << std::endl;
+                            std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
                             sendFinalHttpResponse(e.http_response());
                             return;
                         }
