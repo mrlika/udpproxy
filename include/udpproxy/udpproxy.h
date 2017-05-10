@@ -613,7 +613,6 @@ private:
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
 
                         if (server.enableStatus && (size == STATUS_URI.length() + HTTP_VERSION_ENDING.length())) {
-                            std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
                             if (uri == STATUS_URI) {
                                 processStatus = true;
                                 buffer->consume(size - 2); // Do not consume CRLF
