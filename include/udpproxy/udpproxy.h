@@ -619,15 +619,19 @@ private:
                                 throw ServerError("wrong URI: " + std::string(uri),
                                     "HTTP/1.1 404 Not Found\r\n"
                                     "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                    "Content-Type: text/plain\r\n"
                                     "Connection: close\r\n"
-                                    "\r\n");
+                                    "\r\n"
+                                    "404 Not Found");
                             }
                         } else if (size < MIN_UDP_REQUEST_LINE_SIZE) {
                             throw ServerError("wrong URI: " + std::string(uri),
                                 "HTTP/1.1 404 Not Found\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n"
-                                "\r\n");
+                                "\r\n"
+                                "404 Not Found");
                         }
 
                         // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
@@ -639,8 +643,10 @@ private:
                             throw ServerError("wrong URI: " + std::string(uri),
                                 "HTTP/1.1 404 Not Found\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n"
-                                "\r\n");
+                                "\r\n"
+                                "404 Not Found");
                         }
 
                         boost::asio::ip::address address;
@@ -656,16 +662,20 @@ private:
                             throw ServerError("wrong URI: " + std::string(uri),
                                 "HTTP/1.1 404 Not Found\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n"
-                                "\r\n");
+                                "\r\n"
+                                "404 Not Found");
                         }
 
                         if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
                             throw ServerError("wrong URI: " + std::string(uri),
                                 "HTTP/1.1 404 Not Found\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n"
-                                "\r\n");
+                                "\r\n"
+                                "404 Not Found");
                         }
 
                         udpEndpoint = {address, static_cast<unsigned short>(port)};
