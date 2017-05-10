@@ -749,7 +749,7 @@ private:
             // TODO: optimize JSON output
             std::ostringstream out;
 
-            out << "{\"inputs\":[";
+            out << R"({"inputs":[)";
             bool first = true;
             for (const auto& udpInputItem : server.udpServer.udpInputs) {
                 if (first) {
@@ -760,14 +760,14 @@ private:
                 }
 
                 const auto& udpInput = *(udpInputItem.second);
-                out << "\"endpoint\":\"" << udpInput.udpEndpoint << "\",";
-                out << "\"clients_count\":" << udpInput.clients.size() << ',';
-                out << "\"bitrate\":" << udpInput.inBitrateKbit << '}';
+                out << R"("endpoint":")" << udpInput.udpEndpoint << R"(",)";
+                out << R"("clients_count":)" << udpInput.clients.size() << ',';
+                out << R"("bitrate":)" << udpInput.inBitrateKbit << '}';
             }
-            out << "],\"clients\":[";
+            out << R"(],"clients":[)";
             first = true;
             for (const auto& udpInput : server.udpServer.udpInputs) {
-                std::string udpEndpointJson = "\"udp_endpoint\":\"" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + "\",";
+                std::string udpEndpointJson = R"("udp_endpoint":")" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + R"(",)";
                 for (const auto& client : udpInput.second->clients) {
                     if (first) {
                         first = false;
@@ -776,10 +776,10 @@ private:
                         out << ",{";
                     }
 
-                    out << "\"remote_endpoint\":\"" << client->remoteEndpoint << "\",";
+                    out << R"("remote_endpoint":")" << client->remoteEndpoint << R"(",)";
                     out << udpEndpointJson;
-                    out << "\"output_queue_length\":" << client->outputBuffers.size() << ',';
-                    out << "\"bitrate\":" << client->outBitrateKbit << '}';
+                    out << R"("output_queue_length":)" << client->outputBuffers.size() << ',';
+                    out << R"("bitrate":)" << client->outBitrateKbit << '}';
                 }
             }
             out << "]}";
