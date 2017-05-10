@@ -43,8 +43,8 @@ public:
 
     void setMaxHeaderSize(size_t value) { maxHeaderSize = value; }
     size_t getMaxHeaderSize() { return maxHeaderSize; }
-    void setHeaderReadTimeout(boost::asio::system_timer::duration value) { headerReadTimeout = value; }
-    boost::asio::system_timer::duration getHeaderReadTimeout() { return headerReadTimeout; }
+    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpConnectionTimeout = value; }
+    boost::asio::system_timer::duration getHttpConnectionTimeout() { return httpConnectionTimeout; }
     void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
     size_t getMaxUdpDataSize() { return maxUdpDataSize; }
     void setMaxOutputQueueLength(size_t value) { maxOutputQueueLength = value; }
@@ -485,7 +485,11 @@ private:
         }
 
         void startCancelTimer() {
-            timeoutTimer.expires_from_now(server.headerReadTimeout);
+            if (server.httpConnectionTimeout == 0s) {
+                return;
+            }
+
+            timeoutTimer.expires_from_now(server.httpConnectionTimeout);
             timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
                     return;
@@ -869,7 +873,7 @@ private:
     boost::asio::system_timer clientsReadTimer;
 
     size_t maxHeaderSize = 4 * 1024;
-    boost::asio::system_timer::duration headerReadTimeout = 1s;
+    boost::asio::system_timer::duration httpConnectionTimeout = 1s;
     size_t maxUdpDataSize = 4 * 1024;
     size_t maxOutputQueueLength = 1024;
     size_t maxHttpClients = 0;

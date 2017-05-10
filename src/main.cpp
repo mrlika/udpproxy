@@ -49,6 +49,7 @@ int main(int argc, const char * const argv[]) {
     bool enableStatus;
     unsigned renewMulitcastSubscriptionInterval;
     boost::asio::ip::address multicastInterfaceAddress;
+    unsigned httpConnectionTimeout;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
 
@@ -70,7 +71,7 @@ int main(int argc, const char * const argv[]) {
             "Output queue overflow algorithm: 'clearq' (clear queue) or 'drop' (drop current input data)")
         ("verbose,v", "Enable verbose output")
         ("status,S", "Enable /status URL")
-        ("renew,M", po::value<unsigned>(&renewMulitcastSubscriptionInterval)->default_value(0), "renew multicast subscription interval in seconds (0 = disable)")
+        ("renew,M", po::value<unsigned>(&renewMulitcastSubscriptionInterval)->default_value(0), "Renew multicast subscription interval in seconds (0 = disable)")
         ("multicastif,m", po::value<std::string>()->default_value("0.0.0.0")->notifier([&multicastInterfaceAddress] (const std::string &token) {
             try {
                 multicastInterfaceAddress = boost::asio::ip::address::from_string(token);
@@ -82,7 +83,8 @@ int main(int argc, const char * const argv[]) {
                 throw po::validation_error(po::validation_error::invalid_option_value, "multicastif", token);
             }
 
-        }), "Multicast interface IP address");
+        }), "Multicast interface IP address")
+        ("httptimeout,T", po::value<unsigned>(&httpConnectionTimeout)->default_value(1), "Timeout for HTTP connections in seconds (0 = disable)");
 
     po::variables_map variablesMap;
     try {
@@ -113,6 +115,7 @@ int main(int argc, const char * const argv[]) {
         server.setEnableStatus(enableStatus);
         server.setRenewMulticastSubscriptionInterval(std::chrono::seconds(renewMulitcastSubscriptionInterval));
         server.setMulticastInterfaceAddress(multicastInterfaceAddress);
+        server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
 
         std::cout << "Running on port " << port << std::endl;
         ioService.run();
