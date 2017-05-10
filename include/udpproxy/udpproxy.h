@@ -140,7 +140,6 @@ private:
                     "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                     "Content-Type: text/plain\r\n"
                     "Connection: close\r\n"
-                    "Content-Length: 33"
                     "\r\n"
                     "Maximum number of clients reached");
             }
