@@ -639,7 +639,7 @@ private:
                                 "404 Not Found");
                         }
 
-                        // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
+                        // TODO: replace regex with parsing algorithm for better performance and to avoid memory allocations
                         static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
                         std::cmatch match;
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
