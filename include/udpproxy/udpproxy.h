@@ -28,7 +28,7 @@ enum class OutputQueueOverflowAlgorithm {
     DropData
 };
 
-template <typename Allocator>
+template <typename Allocator, bool SendHttpResponses>
 class BasicServer {
 public:
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
@@ -69,9 +69,25 @@ private:
     typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
 
     class ServerError : public std::runtime_error {
+    private:
+        std::experimental::string_view httpResponse;
+
     public:
-        explicit ServerError(const std::string& message) : std::runtime_error(message) {}
-        explicit ServerError(const char *message) : std::runtime_error(message) {}
+        explicit ServerError(const std::string& message, std::experimental::string_view httpResponse)
+            : std::runtime_error(message), httpResponse(SendHttpResponses ? httpResponse : std::experimental::string_view()) {
+        }
+
+        explicit ServerError(const char *message, std::experimental::string_view httpResponse)
+                : std::runtime_error(message), httpResponse(SendHttpResponses ? httpResponse : std::experimental::string_view()) {
+        }
+
+        std::experimental::string_view http_response() const noexcept {
+            if (SendHttpResponses) {
+                return httpResponse;
+            } else {
+                return {};
+            }
+        }
     };
 
     void readClients() {
@@ -108,12 +124,24 @@ private:
                 return; // FIXME: is it good to stop accept loop?
             }
 
-            if ((maxHttpClients == 0) || (clientsCounter < maxHttpClients)) {
-                auto reader = std::make_shared<HttpHeaderReader>(socket, *this);
-                httpHeaderReaders.emplace_back(reader);
+            auto reader = std::make_shared<HttpHeaderReader>(socket, *this);
+            httpHeaderReaders.emplace_back(reader);
+            reader->startCancelTimer();
+
+            if ((maxHttpClients == 0) || (clientsCounter <= maxHttpClients)) {
                 reader->validateHttpMethod();
-            } else if (verboseLogging) {
-                std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
+            } else {
+                if (verboseLogging) {
+                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
+                }
+                reader->sendFinalHttpResponse(
+                    "HTTP/1.1 429 Too Many Requests\r\n"
+                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Connection: close\r\n"
+                    "Content-Length: 33"
+                    "\r\n"
+                    "Maximum number of clients reached");
             }
 
             startAccept();
@@ -132,12 +160,7 @@ private:
             if (udpInputIterator == udpInputs.end()) {
                 std::unique_ptr<UdpInput> udpInputUnique;
 
-                try {
-                    udpInputUnique = std::make_unique<UdpInput>(server, inputId, udpEndpoint);
-                } catch (const ServerError &e) {
-                    std::cerr << "UDP socket setup error: " << e.what() << std::endl;
-                    return;
-                }
+                udpInputUnique = std::make_unique<UdpInput>(server, inputId, udpEndpoint);
 
                 udpInput = udpInputUnique.get();
                 udpInputs.emplace(inputId, std::move(udpInputUnique));
@@ -161,7 +184,13 @@ private:
                         udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address().to_v4(), server.multicastInterfaceAddress.to_v4()));
                     }
                 } catch (const boost::system::system_error &e) {
-                    throw ServerError(e.what());
+                    throw ServerError(e.what(),
+                        "HTTP/1.1 500 Internal Server Error\r\n"
+                        "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                        "UDP socket error");
                 }
 
                 if (server.verboseLogging) {
@@ -372,6 +401,7 @@ private:
                         "HTTP/1.1 200 OK\r\n"
                         "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                         "Content-Type: application/octet-stream\r\n"
+                        "Connection: close\r\n"
                         "\r\n"sv;
 
                     boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
@@ -454,15 +484,7 @@ private:
             server.clientsCounter--;
         }
 
-        void removeFromServer() {
-            auto it = find_if(server.httpHeaderReaders.begin(), server.httpHeaderReaders.end(), [this] (const std::shared_ptr<HttpHeaderReader>& reader) { return reader.get() == this; });
-            assert(it != server.httpHeaderReaders.end());
-            server.httpHeaderReaders.erase(it);
-        }
-
-        void validateHttpMethod() {
-            static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
-
+        void startCancelTimer() {
             timeoutTimer.expires_from_now(server.headerReadTimeout);
             timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
@@ -473,6 +495,36 @@ private:
                     socket->cancel();
                 }
             });
+        }
+
+        void removeFromServer() {
+            auto it = find_if(server.httpHeaderReaders.begin(), server.httpHeaderReaders.end(), [this] (const std::shared_ptr<HttpHeaderReader>& reader) { return reader.get() == this; });
+            assert(it != server.httpHeaderReaders.end());
+            server.httpHeaderReaders.erase(it);
+        }
+
+        void sendFinalHttpResponse(std::experimental::string_view response) {
+            if (!SendHttpResponses || response.empty()) {
+                removeFromServer();
+                return;
+            }
+
+            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                    if (reference.expired()) {
+                        return;
+                    }
+
+                    if (e && server.verboseLogging) {
+                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
+                    }
+
+                    removeFromServer();
+                });
+        }
+
+        void validateHttpMethod() {
+            static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
@@ -482,13 +534,23 @@ private:
                     }
 
                     try {
-                        if (e) {
-                            throw ServerError(e.message());
+                        if (e == boost::system::errc::operation_canceled) {
+                            throw ServerError(e.message(),
+                                "HTTP/1.1 408 Request Timeout\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
+                        } else if (e) {
+                            throw ServerError(e.message(), "");
                         }
 
                         std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer->data()), REQUEST_METHOD.length());
                         if (REQUEST_METHOD != method) {
-                            throw ServerError("method not supported");
+                            throw ServerError("method not supported",
+                                "HTTP/1.1 501 Not Implemented\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         buffer->consume(size);
@@ -498,7 +560,7 @@ private:
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.what() << std::endl;
                         }
-                        removeFromServer();
+                        sendFinalHttpResponse(e.http_response());
                     }
                 });
         }
@@ -516,25 +578,36 @@ private:
                     }
 
                     try {
-                        if (e) {
-                            throw ServerError(e.message());
+                        if (e == boost::system::errc::operation_canceled) {
+                            throw ServerError(e.message(),
+                                "HTTP/1.1 408 Request Timeout\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
+                        } else if (e) {
+                            throw ServerError(e.message(), "");
                         } else if (size <= HTTP_VERSION_ENDING.length()) {
-                            throw ServerError("request not supported");
+                            throw ServerError("request not supported",
+                                "HTTP/1.1 400 Bad Request\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer->data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
                         if (HTTP_VERSION_ENDING != ending) {
-                            throw ServerError("request not supported");
+                            throw ServerError("request not supported",
+                                "505 HTTP Version Not Supported\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Connection: close\r\n"
+                                "\r\n"
+                                "Only HTTP/1.1 is supported");
                         }
 
                         std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
 
                         if (server.enableStatus && (size == STATUS_URI.length() + HTTP_VERSION_ENDING.length())) {
-                            std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer->data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
-                            if (HTTP_VERSION_ENDING != ending) {
-                                throw ServerError("request not supported");
-                            }
-
                             std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
                             if (uri == STATUS_URI) {
                                 processStatus = true;
@@ -543,10 +616,18 @@ private:
                                 readRestOfHttpHeader();
                                 return;
                             } else {
-                                throw ServerError("request not supported");
+                                throw ServerError("wrong URI: " + std::string(uri),
+                                    "HTTP/1.1 404 Not Found\r\n"
+                                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                    "Connection: close\r\n"
+                                    "\r\n");
                             }
                         } else if (size < MIN_UDP_REQUEST_LINE_SIZE) {
-                            throw ServerError("request not supported");
+                            throw ServerError("wrong URI: " + std::string(uri),
+                                "HTTP/1.1 404 Not Found\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         // TODO: replace regex with parsing algorithm for better preformance and to avoid memory allocations
@@ -555,7 +636,11 @@ private:
                         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
 
                         if (match.empty()) {
-                            throw ServerError("wrong URI: " + std::string(uri));
+                            throw ServerError("wrong URI: " + std::string(uri),
+                                "HTTP/1.1 404 Not Found\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         boost::asio::ip::address address;
@@ -568,11 +653,19 @@ private:
                             // possible only when from_string supports string_view
                             address = boost::asio::ip::address::from_string(match[1]);
                         } catch (...) {
-                            throw ServerError("wrong URI");
+                            throw ServerError("wrong URI: " + std::string(uri),
+                                "HTTP/1.1 404 Not Found\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
-                            throw ServerError("wrong URI");
+                            throw ServerError("wrong URI: " + std::string(uri),
+                                "HTTP/1.1 404 Not Found\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
                         }
 
                         udpEndpoint = {address, static_cast<unsigned short>(port)};
@@ -584,7 +677,7 @@ private:
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.what() << std::endl;
                         }
-                        removeFromServer();
+                        sendFinalHttpResponse(e.http_response());
                     }
                 });
         }
@@ -601,7 +694,17 @@ private:
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: " << e.message() << std::endl;
                         }
-                        removeFromServer();
+
+                        if (e == boost::system::errc::operation_canceled) {
+                            sendFinalHttpResponse(
+                                "HTTP/1.1 408 Request Timeout\r\n"
+                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                                "Connection: close\r\n"
+                                "\r\n");
+                        } else {
+                            removeFromServer();
+                        }
+
                         return;
                     }
 
@@ -615,7 +718,14 @@ private:
 
                         writeJsonStatus();
                     } else {
-                        server.udpServer.addUdpToHttpClient(socket, udpEndpoint);
+                        try {
+                            server.udpServer.addUdpToHttpClient(socket, udpEndpoint);
+                        } catch (const ServerError &e) {
+                            std::cerr << "UDP socket error: " << e.what() << std::endl;
+                            sendFinalHttpResponse(e.http_response());
+                            return;
+                        }
+
                         removeFromServer();
                     }
                 });
@@ -667,6 +777,7 @@ private:
                 "HTTP/1.1 200 OK\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: application/json\r\n"
+                "Connection: close\r\n"
                 "\r\n"sv;
 
             boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
@@ -690,10 +801,8 @@ private:
                                 return;
                             }
 
-                            if (e) {
-                                if (server.verboseLogging) {
-                                    std::cerr << "status HTTP body write error: " << e.message() << std::endl;
-                                }
+                            if (e && server.verboseLogging) {
+                                std::cerr << "status HTTP body write error: " << e.message() << std::endl;
                             }
 
                             removeFromServer();
@@ -762,7 +871,7 @@ private:
     boost::asio::ip::address multicastInterfaceAddress;
 };
 
-typedef BasicServer<std::allocator<uint8_t>> Server;
+typedef BasicServer<std::allocator<uint8_t>, true> Server;
 
 #undef UDPPROXY_SERVER_NAME_DEFINE
 
