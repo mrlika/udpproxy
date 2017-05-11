@@ -209,11 +209,19 @@ private:
                 if (udpServer.verboseLogging) {
                     std::cerr << "new UDP input: udp://" << udpEndpoint << std::endl;
                 }
+
+                if (udpServer.newUdpInputCallback) {
+                    udpServer.newUdpInputCallback(udpEndpoint);
+                }
             }
 
             ~UdpInput() {
                 if (udpServer.verboseLogging) {
                     std::cerr << "remove UDP input: " << udpEndpoint << std::endl;
+                }
+
+                if (udpServer.removeUdpInputCallback) {
+                    udpServer.removeUdpInputCallback(udpEndpoint);
                 }
             }
 
@@ -250,28 +258,15 @@ private:
                         startRenewMulticastSubscription();
                     }
 
+                    if (udpServer.startUdpInputCallback) {
+                        udpServer.startUdpInputCallback(udpEndpoint);
+                    }
+
                     receiveUdp();
                 }
             }
 
             void receiveUdp() {
-                if (server.enableStatus) {
-                    static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
-
-                    auto now = std::chrono::system_clock::now();
-
-                    if (bitrateCalculationStart == std::chrono::system_clock::time_point::min()) {
-                        bitrateCalculationStart = now;
-                    } else {
-                        auto duration = now - bitrateCalculationStart;
-                        if (duration >= BITRATE_PERIOD) {
-                            inBitrateKbit = 8. * bytesIn / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-                            bytesIn = 0;
-                            bitrateCalculationStart = now;
-                        }
-                    }
-                }
-
                 inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(udpServer.maxUdpDataSize);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
@@ -286,7 +281,9 @@ private:
                             return;
                         }
 
-                        bytesIn += bytesRead;
+                        if (udpServer.readUdpInputCallback) {
+                            udpServer.readUdpInputCallback(udpEndpoint, bytesRead);
+                        }
 
                         inputBuffer->resize(bytesRead);
 
@@ -349,23 +346,6 @@ private:
                 }
 
                 void writeData(std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> &buffer) {
-                    if (server.enableStatus) {
-                        static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
-
-                        auto now = std::chrono::system_clock::now();
-
-                        if (bitrateCalculationStart == std::chrono::system_clock::time_point::min()) {
-                            bitrateCalculationStart = now;
-                        } else {
-                            auto duration = now - bitrateCalculationStart;
-                            if (duration >= BITRATE_PERIOD) {
-                                outBitrateKbit = 8. * bytesOut / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-                                bytesOut = 0;
-                                bitrateCalculationStart = now;
-                            }
-                        }
-                    }
-
                     boost::asio::async_write(*socket, boost::asio::buffer(buffer->data(), buffer->size()),
                         [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (reference.expired()) {
@@ -380,7 +360,9 @@ private:
                                 return;
                             }
 
-                            bytesOut += bytesSent;
+                            if (udpServer.writeClientCallback) {
+                                udpServer.writeClientCallback(remoteEndpoint, bytesSent);
+                            }
 
                             assert(buffer == outputBuffers.front());
                             (void)bytesSent; // Avoid unused parameter warning when asserts disabled
@@ -450,9 +432,6 @@ private:
                 boost::asio::ip::tcp::endpoint remoteEndpoint;
                 boost::asio::ip::udp::endpoint udpEndpoint;
                 std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
-                std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
-                size_t bytesOut = 0;
-                double outBitrateKbit = 0;
                 bool readSomeDone = true;
             };
 
@@ -464,9 +443,6 @@ private:
             udp::endpoint udpEndpoint;
             std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> inputBuffer;
             bool isStarted = false;
-            std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
-            size_t bytesIn = 0;
-            double inBitrateKbit = 0;
             boost::asio::system_timer renewMulticastSubscriptionTimer;
         };
 
@@ -500,8 +476,13 @@ private:
         boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
         boost::asio::ip::address multicastInterfaceAddress;
 
+        std::function<void(const boost::asio::ip::udp::endpoint &udpEndpoint)> newUdpInputCallback;
+        std::function<void(const boost::asio::ip::udp::endpoint &udpEndpoint)> removeUdpInputCallback;
+        std::function<void(const boost::asio::ip::udp::endpoint &udpEndpoint)> startUdpInputCallback;
         std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, const boost::asio::ip::udp::endpoint &udpEndpoint)> newClientCallback;
         std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, const boost::asio::ip::udp::endpoint &udpEndpoint)> removeClientCallback;
+        std::function<void(const boost::asio::ip::udp::endpoint &udpEndpoint, size_t bytesRead)> readUdpInputCallback;
+        std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, size_t bytesWritten)> writeClientCallback;
     };
 
     struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
@@ -776,7 +757,7 @@ private:
 
         void writeJsonStatus() {
             // TODO: optimize JSON output
-            std::ostringstream out;
+            /*std::ostringstream out;
 
             out << R"({"inputs":[)";
             bool first = true;
@@ -824,7 +805,7 @@ private:
                 "\r\n"sv;
 
             boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
                     if (reference.expired()) {
                         return;
                     }
@@ -839,7 +820,7 @@ private:
                     }
 
                     boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
-                        [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                        [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
                             if (reference.expired()) {
                                 return;
                             }
@@ -850,7 +831,7 @@ private:
 
                             removeFromServer();
                         });
-                });
+                });*/
         }
 
         std::shared_ptr<tcp::socket> socket;
