@@ -32,12 +32,9 @@ template <typename Allocator, bool SendHttpResponses>
 class BasicServer {
 public:
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint), udpServer(*this), clientsReadTimer(ioService) {}
+            : acceptor(ioService, endpoint), udpServer(ioService), clientsReadTimer(ioService) {}
 
     void runAsync() {
-        static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
-        clientsReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(CLIENT_READ_BUFFER_SIZE);
-
         startAccept();
         readClients();
     }
@@ -46,22 +43,22 @@ public:
     size_t getMaxHttpHeaderSize() { return maxHttpHeaderSize; }
     void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpConnectionTimeout = value; }
     boost::asio::system_timer::duration getHttpConnectionTimeout() { return httpConnectionTimeout; }
-    void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
-    size_t getMaxUdpDataSize() { return maxUdpDataSize; }
-    void setMaxOutputQueueLength(size_t value) { maxOutputQueueLength = value; }
-    size_t getMaxOutputQueueLength() { return maxOutputQueueLength; }
+    void setMaxUdpDataSize(size_t value) { udpServer.setMaxUdpDataSize(value); }
+    size_t getMaxUdpDataSize() { return udpServer.getMaxUdpDataSize(); }
+    void setMaxOutputQueueLength(size_t value) { udpServer.setMaxOutputQueueLength(value); }
+    size_t getMaxOutputQueueLength() { return udpServer.getMaxOutputQueueLength(); }
     void setMaxHttpClients(size_t value) { maxHttpClients = value; }
     size_t getMaxHttpClients() { return maxHttpClients; };
-    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { overflowAlgorithm = value; }
-    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() { return overflowAlgorithm; };
-    void setVerboseLogging(bool value) { verboseLogging = value; }
+    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpServer.setOutputQueueOverflowAlgorithm(value); }
+    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() { return udpServer.getOutputQueueOverflowAlgorithm(); };
+    void setVerboseLogging(bool value) { verboseLogging = value; udpServer.setVerboseLogging(value); }
     bool getVerboseLogging() { return verboseLogging; }
     void setEnableStatus(bool value) { enableStatus = value; }
     bool getEnableStatus() { return enableStatus; }
-    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { renewMulticastSubscriptionInterval = value; }
-    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() { return renewMulticastSubscriptionInterval; }
-    void setMulticastInterfaceAddress(boost::asio::ip::address value) { multicastInterfaceAddress = value; }
-    boost::asio::ip::address getMulticastInterfaceAddress() { return multicastInterfaceAddress; }
+    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpServer.setRenewMulticastSubscriptionInterval(value); }
+    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() { return udpServer.getRenewMulticastSubscriptionInterval(); }
+    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpServer.setMulticastInterfaceAddress(value); }
+    boost::asio::ip::address getMulticastInterfaceAddress() { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
     typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<uint8_t>> InputBuffersAllocator;
@@ -149,7 +146,23 @@ private:
     }
 
     struct UdpServer {
-        explicit UdpServer(BasicServer &server) noexcept: server(server) {}
+        explicit UdpServer(boost::asio::io_service &ioService) noexcept : ioService(ioService) {
+            static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
+            clientsReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(CLIENT_READ_BUFFER_SIZE);
+        }
+
+        void setVerboseLogging(bool value) { verboseLogging = value; }
+        bool getVerboseLogging() { return verboseLogging; }
+        void setMaxUdpDataSize(size_t value) { maxUdpDataSize = value; }
+        size_t getMaxUdpDataSize() { return maxUdpDataSize; }
+        void setMaxOutputQueueLength(size_t value) { maxOutputQueueLength = value; }
+        size_t getMaxOutputQueueLength() { return maxOutputQueueLength; }
+        void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { overflowAlgorithm = value; }
+        OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() { return overflowAlgorithm; };
+        void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { renewMulticastSubscriptionInterval = value; }
+        boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() { return renewMulticastSubscriptionInterval; }
+        void setMulticastInterfaceAddress(boost::asio::ip::address value) { multicastInterfaceAddress = value; }
+        boost::asio::ip::address getMulticastInterfaceAddress() { return multicastInterfaceAddress; }
 
         void addUdpToHttpClient(std::shared_ptr<tcp::socket> &clientSocket, const boost::asio::ip::udp::endpoint &udpEndpoint) {
             uint64_t inputId = getEndpointId(udpEndpoint);
@@ -160,7 +173,7 @@ private:
             if (udpInputIterator == udpInputs.end()) {
                 std::unique_ptr<UdpInput> udpInputUnique;
 
-                udpInputUnique = std::make_unique<UdpInput>(server, inputId, udpEndpoint);
+                udpInputUnique = std::make_unique<UdpInput>(*this, inputId, udpEndpoint);
 
                 udpInput = udpInputUnique.get();
                 udpInputs.emplace(inputId, std::move(udpInputUnique));
@@ -172,16 +185,16 @@ private:
         }
 
         struct UdpInput : public std::enable_shared_from_this<UdpServer::UdpInput> {
-            UdpInput(BasicServer &server, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
-                    : server(server), id(id), udpSocket(server.acceptor.get_io_service()),
-                      udpEndpoint(udpEndpoint), renewMulticastSubscriptionTimer(server.acceptor.get_io_service()) {
+            UdpInput(UdpServer &udpServer, uint64_t id, const boost::asio::ip::udp::endpoint &udpEndpoint)
+                    : udpServer(udpServer), id(id), udpSocket(udpServer.ioService),
+                      udpEndpoint(udpEndpoint), renewMulticastSubscriptionTimer(udpServer.ioService) {
                 try {
                     udpSocket.open(udpEndpoint.protocol());
                     udpSocket.set_option(boost::asio::ip::udp::socket::reuse_address(true)); // FIXME: is it good?
                     udpSocket.bind(udpEndpoint);
 
                     if (udpEndpoint.address().is_multicast()) {
-                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address().to_v4(), server.multicastInterfaceAddress.to_v4()));
+                        udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address().to_v4(), udpServer.multicastInterfaceAddress.to_v4()));
                     }
                 } catch (const boost::system::system_error &e) {
                     throw ServerError(e.what(),
@@ -193,19 +206,19 @@ private:
                         "UDP socket error");
                 }
 
-                if (server.verboseLogging) {
+                if (udpServer.verboseLogging) {
                     std::cerr << "new UDP input: udp://" << udpEndpoint << std::endl;
                 }
             }
 
             ~UdpInput() {
-                if (server.verboseLogging) {
+                if (udpServer.verboseLogging) {
                     std::cerr << "remove UDP input: " << udpEndpoint << std::endl;
                 }
             }
 
             void startRenewMulticastSubscription() {
-                renewMulticastSubscriptionTimer.expires_from_now(server.renewMulticastSubscriptionInterval);
+                renewMulticastSubscriptionTimer.expires_from_now(udpServer.renewMulticastSubscriptionInterval);
                 renewMulticastSubscriptionTimer.async_wait([this, reference = std::weak_ptr<UdpInput>(this->shared_from_this())] (const boost::system::error_code &e) {
                     if (reference.expired()) {
                         return;
@@ -214,14 +227,14 @@ private:
                     }
 
                     try {
-                        if (server.verboseLogging) {
+                        if (udpServer.verboseLogging) {
                             std::cerr << "renew multicast subscription for " << udpEndpoint << std::endl;
                         }
                         udpSocket.set_option(boost::asio::ip::multicast::leave_group(udpEndpoint.address()));
                         udpSocket.set_option(boost::asio::ip::multicast::join_group(udpEndpoint.address()));
                     } catch (const boost::system::system_error &e) {
                         std::cerr << "error: failed to renew multicast subscription for " << udpEndpoint << ": " << e.what() << std::endl;
-                        server.udpServer.udpInputs.erase(id);
+                        udpServer.udpInputs.erase(id);
                         return;
                     }
 
@@ -233,7 +246,7 @@ private:
                 if (!isStarted) {
                     isStarted = true;
 
-                    if (udpEndpoint.address().is_multicast() && (server.renewMulticastSubscriptionInterval != 0s)) {
+                    if (udpEndpoint.address().is_multicast() && (udpServer.renewMulticastSubscriptionInterval != 0s)) {
                         startRenewMulticastSubscription();
                     }
 
@@ -259,7 +272,7 @@ private:
                     }
                 }
 
-                inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(server.maxUdpDataSize);
+                inputBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(udpServer.maxUdpDataSize);
 
                 udpSocket.async_receive_from(boost::asio::buffer(inputBuffer->data(), inputBuffer->size()), senderEndpoint,
                     [this, reference = std::weak_ptr<UdpInput>(this->shared_from_this()), buffer = inputBuffer] (const boost::system::error_code &e, std::size_t bytesRead) {
@@ -269,7 +282,7 @@ private:
 
                         if (e) {
                             std::cerr << "UDP socket receive error for " << udpEndpoint << ": " << e.message() << std::endl;
-                            server.udpServer.udpInputs.erase(id);
+                            udpServer.udpInputs.erase(id);
                             return;
                         }
 
@@ -283,19 +296,19 @@ private:
                             if (length == 0) {
                                 client->outputBuffers.emplace_back(inputBuffer);
                                 client->writeData(inputBuffer);
-                            } else if ((server.maxOutputQueueLength == 0) || (length < server.maxOutputQueueLength)) {
+                            } else if ((udpServer.maxOutputQueueLength == 0) || (length < udpServer.maxOutputQueueLength)) {
                                 client->outputBuffers.emplace_back(inputBuffer);
                             } else {
-                                switch (server.overflowAlgorithm) {
+                                switch (udpServer.overflowAlgorithm) {
                                 case OutputQueueOverflowAlgorithm::ClearQueue:
-                                    if (server.verboseLogging) {
+                                    if (udpServer.verboseLogging) {
                                         std::cerr << "error: output queue overflow - clearing queue for " << client->remoteEndpoint << " (udp://" << udpEndpoint << ")" << std::endl;
                                     }
                                     client->outputBuffers.resize(1);
                                     break;
 
                                 case OutputQueueOverflowAlgorithm::DropData:
-                                    if (server.verboseLogging) {
+                                    if (udpServer.verboseLogging) {
                                         std::cerr << "error: output queue overflow - dropping data for " << client->remoteEndpoint << " (udp://" << udpEndpoint << ")" << std::endl;
                                     }
                                     break;
@@ -308,25 +321,31 @@ private:
             }
 
             void addClient(std::shared_ptr<tcp::socket>& socket) {
-                auto client = std::make_shared<typename UdpInput::Client>(socket, server, id);
+                auto client = std::make_shared<typename UdpInput::Client>(socket, udpServer, id, udpEndpoint);
                 clients.emplace_back(client);
                 client->writeHttpHeader();
             }
 
             struct Client : public std::enable_shared_from_this<UdpInput::Client> {
-                Client(std::shared_ptr<tcp::socket> &socket, BasicServer &server, uint64_t inputId) noexcept
-                        : socket(socket), server(server), inputId(inputId), remoteEndpoint(socket->remote_endpoint()) {
-                    if (server.verboseLogging) {
-                        std::cerr << "new HTTP client: " << remoteEndpoint << std::endl;
+                Client(std::shared_ptr<tcp::socket> &socket, UdpServer &udpServer, uint64_t inputId, const boost::asio::ip::udp::endpoint& udpEndpoint) noexcept
+                        : socket(socket), udpServer(udpServer), inputId(inputId), remoteEndpoint(socket->remote_endpoint()), udpEndpoint(udpEndpoint) {
+                    if (udpServer.verboseLogging) {
+                        std::cerr << "new HTTP client " << remoteEndpoint << " for " << udpEndpoint <<  std::endl;
                     }
-                    server.clientsCounter++;
+
+                    if (udpServer.newClientCallback) {
+                        udpServer.newClientCallback(remoteEndpoint, udpEndpoint);
+                    }
                 }
 
                 ~Client() noexcept {
-                    if (server.verboseLogging) {
-                        std::cerr << "remove HTTP client: " << remoteEndpoint << std::endl;
+                    if (udpServer.verboseLogging) {
+                        std::cerr << "remove HTTP client " << remoteEndpoint << " for " << udpEndpoint << std::endl;
                     }
-                    server.clientsCounter--;
+
+                    if (udpServer.removeClientCallback) {
+                        udpServer.removeClientCallback(remoteEndpoint, udpEndpoint);
+                    }
                 }
 
                 void writeData(std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> &buffer) {
@@ -354,10 +373,10 @@ private:
                             }
 
                             if (e) {
-                                if (server.verboseLogging) {
+                                if (udpServer.verboseLogging) {
                                     std::cerr << "HTTP write error for " << remoteEndpoint << ": " << e.message() << std::endl;
                                 }
-                                server.udpServer.removeUdpToHttpClient(inputId, socket);
+                                udpServer.removeUdpToHttpClient(inputId, socket);
                                 return;
                             }
 
@@ -380,19 +399,19 @@ private:
                     }
 
                     readSomeDone = false;
-                    socket->async_read_some(boost::asio::buffer(server.clientsReadBuffer->data(), server.clientsReadBuffer->size()),
-                        [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = server.clientsReadBuffer] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
+                    socket->async_read_some(boost::asio::buffer(udpServer.clientsReadBuffer->data(), udpServer.clientsReadBuffer->size()),
+                        [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = udpServer.clientsReadBuffer] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
                             if (reference.expired()) {
                                 return;
                             }
 
                             if (!e) {
                                 return;
-                            } else if (server.verboseLogging) {
+                            } else if (udpServer.verboseLogging) {
                                 std::cerr << "error reading client " << remoteEndpoint << ": " << e.message() << std::endl;
                             }
 
-                            server.udpServer.removeUdpToHttpClient(inputId, socket);
+                            udpServer.removeUdpToHttpClient(inputId, socket);
                          });
                 }
 
@@ -411,24 +430,25 @@ private:
                             }
 
                             if (e) {
-                                if (server.verboseLogging) {
+                                if (udpServer.verboseLogging) {
                                     std::cerr << "HTTP header write error for " << remoteEndpoint << ": " << e.message() << std::endl;
                                 }
 
-                                server.udpServer.removeUdpToHttpClient(inputId, socket);
+                                udpServer.removeUdpToHttpClient(inputId, socket);
                                 return;
                             }
 
-                            auto udpInputIterator = server.udpServer.udpInputs.find(inputId);
-                            assert(udpInputIterator != server.udpServer.udpInputs.end());
+                            auto udpInputIterator = udpServer.udpInputs.find(inputId);
+                            assert(udpInputIterator != udpServer.udpInputs.end());
                             udpInputIterator->second->start();
                         });
                 }
 
                 std::shared_ptr<tcp::socket> socket;
-                BasicServer &server;
+                UdpServer &udpServer;
                 uint64_t inputId;
                 boost::asio::ip::tcp::endpoint remoteEndpoint;
+                boost::asio::ip::udp::endpoint udpEndpoint;
                 std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
                 std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
                 size_t bytesOut = 0;
@@ -436,7 +456,7 @@ private:
                 bool readSomeDone = true;
             };
 
-            BasicServer &server;
+            UdpServer &udpServer;
             uint64_t id;
             std::list<std::shared_ptr<UdpInput::Client>> clients;
             udp::socket udpSocket;
@@ -470,7 +490,18 @@ private:
         }
 
         std::unordered_map<uint64_t, std::shared_ptr<UdpInput>> udpInputs;
-        BasicServer &server;
+        boost::asio::io_service &ioService;
+        std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> clientsReadBuffer;
+
+        bool verboseLogging = true;
+        size_t maxUdpDataSize = 4 * 1024;
+        size_t maxOutputQueueLength = 1024;
+        OutputQueueOverflowAlgorithm overflowAlgorithm = OutputQueueOverflowAlgorithm::ClearQueue;
+        boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
+        boost::asio::ip::address multicastInterfaceAddress;
+
+        std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, const boost::asio::ip::udp::endpoint &udpEndpoint)> newClientCallback;
+        std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, const boost::asio::ip::udp::endpoint &udpEndpoint)> removeClientCallback;
     };
 
     struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
@@ -868,19 +899,13 @@ private:
     UdpServer udpServer;
     std::list<std::shared_ptr<HttpHeaderReader>> httpHeaderReaders;
     size_t clientsCounter = 0;
-    std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> clientsReadBuffer;
     boost::asio::system_timer clientsReadTimer;
 
     size_t maxHttpHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration httpConnectionTimeout = 1s;
-    size_t maxUdpDataSize = 4 * 1024;
-    size_t maxOutputQueueLength = 1024;
     size_t maxHttpClients = 0;
-    OutputQueueOverflowAlgorithm overflowAlgorithm = OutputQueueOverflowAlgorithm::ClearQueue;
     bool verboseLogging = true;
     bool enableStatus = false;
-    boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
-    boost::asio::ip::address multicastInterfaceAddress;
 };
 
 typedef BasicServer<std::allocator<uint8_t>, true> Server;
