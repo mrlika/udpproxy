@@ -95,7 +95,7 @@ int main(int argc, const char * const argv[]) {
         return 1;
     }
 
-    if (variablesMap.count("help")) {
+    if (variablesMap.count("help") != 0) {
         std::cout << description << std::endl;
         return 0;
     }
