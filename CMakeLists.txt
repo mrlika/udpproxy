@@ -15,7 +15,6 @@ if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 endif()
 
-aux_source_directory(src LIB_SOURCES)
 file(GLOB HEADERS include/udpproxy/*.h*)
 include_directories(include)
 
