@@ -349,7 +349,7 @@ private:
     };
 
     static uint64_t getEndpointId(const boost::asio::ip::udp::endpoint &udpEndpoint) noexcept {
-        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 2) | udpEndpoint.port();
+        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 16) | udpEndpoint.port();
     }
 
     void removeUdpToHttpClient(uint64_t inputId, const std::shared_ptr<tcp::socket> &clientSocket) {
@@ -503,7 +503,7 @@ private:
 
             startAccept();
         });
-    }    
+    }
 
     struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
         HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, BasicServer &server)
