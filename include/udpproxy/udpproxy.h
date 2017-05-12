@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <list>
 #include <experimental/string_view>
+#include <experimental/array>
 
 namespace UdpProxy {
 
@@ -409,41 +410,26 @@ private:
     std::function<void(const boost::asio::ip::tcp::endpoint &clientEndpoint, size_t bytesWritten)> writeClientCallback;
 };
 
-template <typename Allocator, bool SendHttpResponses>
-class BasicServer {
+template <bool SendHttpResponses>
+class SimpleHttpServer {
 public:
-    BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint), udpServer(ioService) {}
+    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
+            : acceptor(ioService, endpoint) {}
 
     void runAsync() {
-        udpServer.runAsync();
         startAccept();
     }
 
-    void setMaxHttpHeaderSize(size_t value) { maxHttpHeaderSize = value; }
+    void setMaxHttpHeaderSize(size_t value) noexcept { maxHttpHeaderSize = value; }
     size_t getMaxHttpHeaderSize() const noexcept { return maxHttpHeaderSize; }
-    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpConnectionTimeout = value; }
+    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) noexcept { httpConnectionTimeout = value; }
     boost::asio::system_timer::duration getHttpConnectionTimeout() const noexcept { return httpConnectionTimeout; }
-    void setMaxUdpDataSize(size_t value) { udpServer.setMaxUdpDataSize(value); }
-    size_t getMaxUdpDataSize() const noexcept { return udpServer.getMaxUdpDataSize(); }
-    void setMaxOutputQueueLength(size_t value) { udpServer.setMaxOutputQueueLength(value); }
-    size_t getMaxOutputQueueLength() const noexcept { return udpServer.getMaxOutputQueueLength(); }
-    void setMaxHttpClients(size_t value) { maxHttpClients = value; }
-    size_t getMaxHttpClients() const noexcept { return maxHttpClients; };
-    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpServer.setOutputQueueOverflowAlgorithm(value); }
-    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() const noexcept { return udpServer.getOutputQueueOverflowAlgorithm(); };
-    void setVerboseLogging(bool value) { verboseLogging = value; udpServer.setVerboseLogging(value); }
+    void setMaxHttpClients(size_t value) noexcept { maxHttpClients = value; }
+    size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
+    void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
-    void setEnableStatus(bool value) { enableStatus = value; }
-    bool getEnableStatus() const noexcept { return enableStatus; }
-    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpServer.setRenewMulticastSubscriptionInterval(value); }
-    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() const noexcept { return udpServer.getRenewMulticastSubscriptionInterval(); }
-    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpServer.setMulticastInterfaceAddress(value); }
-    boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
-    typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<uint8_t>> InputBuffersAllocator;
-
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
     typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
 
@@ -486,12 +472,13 @@ private:
             httpHeaderReaders.emplace_back(reader);
             reader->startCancelTimer();
 
-            if ((maxHttpClients == 0) || (clientsCounter <= maxHttpClients)) {
+            if ((maxHttpClients == 0) || (httpHeaderReaders.size() <= maxHttpClients)) {
                 reader->validateHttpMethod();
             } else {
                 if (verboseLogging) {
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
                 }
+
                 reader->sendFinalHttpResponse(
                     "HTTP/1.1 429 Too Many Requests\r\n"
                     "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
@@ -506,14 +493,9 @@ private:
     }
 
     struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, BasicServer &server)
+        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()), server(server) {
-            server.clientsCounter++;
-        }
-
-        ~HttpHeaderReader() noexcept {
-            server.clientsCounter--;
         }
 
         void startCancelTimer() {
@@ -564,7 +546,7 @@ private:
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -603,12 +585,10 @@ private:
 
         void readHttpRequestUri() {
             static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
-            static constexpr size_t MIN_UDP_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
-            static constexpr std::experimental::string_view STATUS_URI = "/status"sv;
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize("\r\n", server.maxHttpHeaderSize - bytesRead - "\r\n"sv.length())),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -633,7 +613,7 @@ private:
                         std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer->data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
                         if (HTTP_VERSION_ENDING != ending) {
                             throw ServerError("request not supported",
-                                "505 HTTP Version Not Supported\r\n"
+                                "HTTP/1.1 505 HTTP Version Not Supported\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                                 "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n"
@@ -641,79 +621,7 @@ private:
                                 "Only HTTP/1.1 is supported");
                         }
 
-                        std::experimental::string_view uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
-
-                        if (server.enableStatus && (size == STATUS_URI.length() + HTTP_VERSION_ENDING.length())) {
-                            if (uri == STATUS_URI) {
-                                processStatus = true;
-                                buffer->consume(size - 2); // Do not consume CRLF
-                                bytesRead += (size - 2);
-                                readRestOfHttpHeader();
-                                return;
-                            } else {
-                                throw ServerError("wrong URI: " + std::string(uri),
-                                    "HTTP/1.1 404 Not Found\r\n"
-                                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                    "Content-Type: text/plain\r\n"
-                                    "Connection: close\r\n"
-                                    "\r\n"
-                                    "404 Not Found");
-                            }
-                        } else if (size < MIN_UDP_REQUEST_LINE_SIZE) {
-                            throw ServerError("wrong URI: " + std::string(uri),
-                                "HTTP/1.1 404 Not Found\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "404 Not Found");
-                        }
-
-                        // TODO: replace regex with parsing algorithm for better performance and to avoid memory allocations
-                        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
-                        std::cmatch match;
-                        std::regex_match(uri.begin(), uri.end(), match, uriRegex);
-
-                        if (match.empty()) {
-                            throw ServerError("wrong URI: " + std::string(uri),
-                                "HTTP/1.1 404 Not Found\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "404 Not Found");
-                        }
-
-                        boost::asio::ip::address address;
-                        unsigned long port;
-
-                        try {
-                            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
-                            port = std::stoul(match[2]);
-                            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
-                            // possible only when from_string supports string_view
-                            address = boost::asio::ip::address::from_string(match[1]);
-                        } catch (...) {
-                            throw ServerError("wrong URI: " + std::string(uri),
-                                "HTTP/1.1 404 Not Found\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "404 Not Found");
-                        }
-
-                        if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
-                            throw ServerError("wrong URI: " + std::string(uri),
-                                "HTTP/1.1 404 Not Found\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "404 Not Found");
-                        }
-
-                        udpEndpoint = {address, static_cast<unsigned short>(port)};
+                        uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
 
                         buffer->consume(size - 2); // Do not consume CRLF
                         bytesRead += (size - 2);
@@ -728,9 +636,11 @@ private:
         }
 
         void readRestOfHttpHeader() {
+            constexpr std::experimental::string_view HEADER_END = "\r\n\r\n"sv;
+
             boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize("\r\n\r\n", server.maxHttpHeaderSize - bytesRead)),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, size_t /*size*/) {
+                UntilFunction(MatchStringOrSize(HEADER_END, server.maxHttpHeaderSize - bytesRead)),
+                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -753,120 +663,37 @@ private:
                         return;
                     }
 
-                    if (processStatus) {
-                        this->buffer.reset();
-
+                    if ((size < HEADER_END.length()) || (std::experimental::string_view(boost::asio::buffer_cast<const char*>(buffer->data()) + size - HEADER_END.length(), HEADER_END.length()) != HEADER_END)) {
                         if (server.verboseLogging) {
-                            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
+                            std::cerr << "HTTP client error: request header size is too large" << std::endl;
                         }
 
-                        writeJsonStatus();
+                        sendFinalHttpResponse(
+                            "431 Request Header Fields Too Large\r\n"
+                            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                            "Content-Type: text/plain\r\n"
+                            "Connection: close\r\n"
+                            "\r\n"
+                            "Total size of HTTP request header is too large");
+                        return;
+                    }
+
+                    if (server.processUriHandler) {
+                        std::experimental::string_view httpHeaderFields = {boost::asio::buffer_cast<const char*>(buffer->data()) + 2, size - HEADER_END.length()};
+                        server.processUriHandler(socket, uri, httpHeaderFields);
                     } else {
-                        try {
-                            server.udpServer.addUdpToHttpClient(socket, udpEndpoint);
-                        } catch (const boost::system::system_error &e) {
-                            std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
-                            sendFinalHttpResponse(
-                                "HTTP/1.1 500 Internal Server Error\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "UDP socket error");
-                            return;
-                        }
-
                         removeFromServer();
                     }
                 });
-        }
-
-        void writeJsonStatus() {
-            // TODO: optimize JSON output
-            /*std::ostringstream out;
-
-            out << R"({"inputs":[)";
-            bool first = true;
-            for (const auto& udpInputItem : server.udpServer.udpInputs) {
-                if (first) {
-                    first = false;
-                    out << '{';
-                } else {
-                    out << ",{";
-                }
-
-                const auto& udpInput = *(udpInputItem.second);
-                out << R"("endpoint":")" << udpInput.udpEndpoint << R"(",)";
-                out << R"("clients_count":)" << udpInput.clients.size() << ',';
-                out << R"("bitrate":)" << udpInput.inBitrateKbit << '}';
-            }
-            out << R"(],"clients":[)";
-            first = true;
-            for (const auto& udpInput : server.udpServer.udpInputs) {
-                std::string udpEndpointJson = R"("udp_endpoint":")" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + R"(",)";
-                for (const auto& client : udpInput.second->clients) {
-                    if (first) {
-                        first = false;
-                        out << '{';
-                    } else {
-                        out << ",{";
-                    }
-
-                    out << R"("remote_endpoint":")" << client->remoteEndpoint << R"(",)";
-                    out << udpEndpointJson;
-                    out << R"("output_queue_length":)" << client->outputBuffers.size() << ',';
-                    out << R"("bitrate":)" << client->outBitrateKbit << '}';
-                }
-            }
-            out << "]}";
-
-            // TODO: optimize to use direct buffer access without copying
-            auto response = std::make_shared<std::string>(out.str());
-
-            static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
-                "HTTP/1.1 200 OK\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: application/json\r\n"
-                "Connection: close\r\n"
-                "\r\n"sv;
-
-            boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
-                    if (reference.expired()) {
-                        return;
-                    }
-
-                    if (e) {
-                        if (server.verboseLogging) {
-                            std::cerr << "status HTTP header write error: " << e.message() << std::endl;
-                        }
-
-                        removeFromServer();
-                        return;
-                    }
-
-                    boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
-                        [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
-                            if (reference.expired()) {
-                                return;
-                            }
-
-                            if (e && server.verboseLogging) {
-                                std::cerr << "status HTTP body write error: " << e.message() << std::endl;
-                            }
-
-                            removeFromServer();
-                        });
-                });*/
         }
 
         std::shared_ptr<tcp::socket> socket;
         std::shared_ptr<boost::asio::streambuf> buffer;
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
-        BasicServer &server;
-        boost::asio::ip::udp::endpoint udpEndpoint;
-        bool processStatus = false;
+        SimpleHttpServer &server;
+
+        std::experimental::string_view uri;
     };
 
     class MatchStringOrSize {
@@ -903,13 +730,207 @@ private:
     };
 
     tcp::acceptor acceptor;
-    UdpServer<Allocator> udpServer;
     std::list<std::shared_ptr<HttpHeaderReader>> httpHeaderReaders;
-    size_t clientsCounter = 0;
 
     size_t maxHttpHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration httpConnectionTimeout = 1s;
     size_t maxHttpClients = 0;
+    bool verboseLogging = true;
+
+    std::function<void(std::shared_ptr<tcp::socket> socket, std::experimental::string_view uri, std::experimental::string_view httpHeaderFields)> processUriHandler;
+};
+
+template <typename Allocator, bool SendHttpResponses>
+class BasicServer {
+public:
+    BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
+            : udpServer(ioService), httpServer(ioService, endpoint) {
+    }
+
+    void runAsync() {
+        udpServer.runAsync();
+        httpServer.runAsync();
+    }
+
+    void setMaxHttpHeaderSize(size_t value) { httpServer.setMaxHttpHeaderSize(value); }
+    size_t getMaxHttpHeaderSize() const noexcept { return httpServer.getMaxHttpHeaderSize(); }
+    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpServer.setHttpConnectionTimeout(value); }
+    boost::asio::system_timer::duration getHttpConnectionTimeout() const noexcept { return httpServer.getHttpConnectionTimeout(); }
+    void setMaxUdpDataSize(size_t value) { udpServer.setMaxUdpDataSize(value); }
+    size_t getMaxUdpDataSize() const noexcept { return udpServer.getMaxUdpDataSize(); }
+    void setMaxOutputQueueLength(size_t value) { udpServer.setMaxOutputQueueLength(value); }
+    size_t getMaxOutputQueueLength() const noexcept { return udpServer.getMaxOutputQueueLength(); }
+    void setMaxHttpClients(size_t value) { httpServer.setMaxHttpClients(value); }
+    size_t getMaxHttpClients() const noexcept { return httpServer.getMaxHttpClients(); }
+    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpServer.setOutputQueueOverflowAlgorithm(value); }
+    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() const noexcept { return udpServer.getOutputQueueOverflowAlgorithm(); };
+    void setVerboseLogging(bool value) {
+        verboseLogging = value;
+        udpServer.setVerboseLogging(value);
+        httpServer.setVerboseLogging(value);
+    }
+    bool getVerboseLogging() const noexcept { return verboseLogging; }
+    void setEnableStatus(bool value) { enableStatus = value; }
+    bool getEnableStatus() const noexcept { return enableStatus; }
+    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpServer.setRenewMulticastSubscriptionInterval(value); }
+    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() const noexcept { return udpServer.getRenewMulticastSubscriptionInterval(); }
+    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpServer.setMulticastInterfaceAddress(value); }
+    boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
+
+private:
+    void addUdpClient() {
+        /*try {
+            udpServer.addUdpToHttpClient(socket, udpEndpoint);
+        } catch (const boost::system::system_error &e) {
+            std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
+            sendFinalHttpResponse(
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "UDP socket error");
+            return;
+        }*/
+    }
+
+    void parseUdpUri() {
+        /*static constexpr size_t MIN_UDP_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
+        static constexpr std::experimental::string_view STATUS_URI = "/status"sv;
+
+        // TODO: replace regex with parsing algorithm for better performance and to avoid memory allocations
+        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
+        std::cmatch match;
+        std::regex_match(uri.begin(), uri.end(), match, uriRegex);
+
+        if (match.empty()) {
+            throw ServerError("wrong URI: " + std::string(uri),
+                "HTTP/1.1 404 Not Found\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "404 Not Found");
+        }
+
+        boost::asio::ip::address address;
+        unsigned long port;
+
+        try {
+            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
+            port = std::stoul(match[2]);
+            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
+            // possible only when from_string supports string_view
+            address = boost::asio::ip::address::from_string(match[1]);
+        } catch (...) {
+            throw ServerError("wrong URI: " + std::string(uri),
+                "HTTP/1.1 404 Not Found\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "404 Not Found");
+        }
+
+        if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
+            throw ServerError("wrong URI: " + std::string(uri),
+                "HTTP/1.1 404 Not Found\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "404 Not Found");
+        }
+
+        udpEndpoint = {address, static_cast<unsigned short>(port)};*/
+    }
+
+    void writeJsonStatus() {
+        /*if (verboseLogging) {
+            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
+        }
+
+        // TODO: optimize JSON output
+        std::ostringstream out;
+
+        out << R"({"inputs":[)";
+        bool first = true;
+        for (const auto& udpInputItem : server.udpServer.udpInputs) {
+            if (first) {
+                first = false;
+                out << '{';
+            } else {
+                out << ",{";
+            }
+
+            const auto& udpInput = *(udpInputItem.second);
+            out << R"("endpoint":")" << udpInput.udpEndpoint << R"(",)";
+            out << R"("clients_count":)" << udpInput.clients.size() << ',';
+            out << R"("bitrate":)" << udpInput.inBitrateKbit << '}';
+        }
+        out << R"(],"clients":[)";
+        first = true;
+        for (const auto& udpInput : server.udpServer.udpInputs) {
+            std::string udpEndpointJson = R"("udp_endpoint":")" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + R"(",)";
+            for (const auto& client : udpInput.second->clients) {
+                if (first) {
+                    first = false;
+                    out << '{';
+                } else {
+                    out << ",{";
+                }
+
+                out << R"("remote_endpoint":")" << client->remoteEndpoint << R"(",)";
+                out << udpEndpointJson;
+                out << R"("output_queue_length":)" << client->outputBuffers.size() << ',';
+                out << R"("bitrate":)" << client->outBitrateKbit << '}';
+            }
+        }
+        out << "]}";
+
+        // TODO: optimize to use direct buffer access without copying
+        auto response = std::make_shared<std::string>(out.str());
+
+        static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
+            "HTTP/1.1 200 OK\r\n"
+            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+            "Content-Type: application/json\r\n"
+            "Connection: close\r\n"
+            "\r\n"sv;
+
+        boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
+            [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
+                if (reference.expired()) {
+                    return;
+                }
+
+                if (e) {
+                    if (server.verboseLogging) {
+                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
+                    }
+
+                    removeFromServer();
+                    return;
+                }
+
+                boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
+                    [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
+                        if (reference.expired()) {
+                            return;
+                        }
+
+                        if (e && server.verboseLogging) {
+                            std::cerr << "status HTTP body write error: " << e.message() << std::endl;
+                        }
+
+                        removeFromServer();
+                    });
+            });*/
+    }
+
+    UdpServer<Allocator> udpServer;
+    SimpleHttpServer<SendHttpResponses> httpServer;
+
     bool verboseLogging = true;
     bool enableStatus = false;
 };
