@@ -412,7 +412,50 @@ private:
 
 template <bool SendHttpResponses>
 class SimpleHttpServer {
+private:
+    class HttpHeaderReader;
+
 public:
+    class HttpRequest {
+    public:
+        ~HttpRequest() {
+            if (!socket.expired()) {
+                auto it = find_if(server.httpHeaderReaders.begin(), server.httpHeaderReaders.end(), [socketPointer = std::shared_ptr<tcp::socket>(socket).get()] (const std::shared_ptr<HttpHeaderReader>& reader) { return reader->socket.get() == socketPointer; });
+                assert(it != server.httpHeaderReaders.end());
+                server.httpHeaderReaders.erase(it);
+            }
+        }
+
+        HttpRequest(const HttpRequest&) = default;
+        HttpRequest(HttpRequest&&) = default;
+
+        std::experimental::string_view getUri() { return uri; }
+        std::experimental::string_view getHeaderFields() { return headerFields; }
+        std::weak_ptr<tcp::socket> getSocket() { return socket; }
+
+        void cancelRequestTimeoutTimer() {
+            if (!socket.expired()) {
+                timeoutTimer.cancel();
+            }
+        }
+
+    private:
+        friend class HttpHeaderReader;
+
+        HttpRequest(std::weak_ptr<tcp::socket> socket, std::shared_ptr<boost::asio::streambuf> headerBuffer,
+                boost::asio::system_timer &timeoutTimer, std::experimental::string_view uri,
+                std::experimental::string_view headerFields, SimpleHttpServer &server) noexcept
+                : socket(socket), headerBuffer(headerBuffer), timeoutTimer(timeoutTimer), uri(uri), headerFields(headerFields), server(server) {
+        }
+
+        std::weak_ptr<tcp::socket> socket;
+        std::shared_ptr<boost::asio::streambuf> headerBuffer;
+        boost::asio::system_timer &timeoutTimer;
+        std::experimental::string_view uri;
+        std::experimental::string_view headerFields;
+        SimpleHttpServer &server;
+    };
+
     SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : acceptor(ioService, endpoint) {}
 
@@ -428,6 +471,8 @@ public:
     size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
     void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
+    void setRequestHandler(std::function<void(HttpRequest)> handler) { requestHandler = handler; }
+    std::function<void(HttpRequest)> getRequestHandler() { return requestHandler; }
 
 private:
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
@@ -678,9 +723,12 @@ private:
                         return;
                     }
 
-                    if (server.processUriHandler) {
+                    if (server.requestHandler) {
                         std::experimental::string_view httpHeaderFields = {boost::asio::buffer_cast<const char*>(buffer->data()) + 2, size - HEADER_END.length()};
-                        server.processUriHandler(socket, uri, httpHeaderFields);
+
+                        HttpRequest httpRequest(socket, buffer, timeoutTimer, uri, httpHeaderFields, server);
+
+                        server.requestHandler(std::move(httpRequest));
                     } else {
                         removeFromServer();
                     }
@@ -737,7 +785,7 @@ private:
     size_t maxHttpClients = 0;
     bool verboseLogging = true;
 
-    std::function<void(std::shared_ptr<tcp::socket> socket, std::experimental::string_view uri, std::experimental::string_view httpHeaderFields)> processUriHandler;
+    std::function<void(HttpRequest)> requestHandler;
 };
 
 template <typename Allocator, bool SendHttpResponses>
