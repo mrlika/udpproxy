@@ -426,7 +426,6 @@ public:
             }
         }
 
-        HttpRequest(const HttpRequest&) = default;
         HttpRequest(HttpRequest&&) = default;
 
         std::experimental::string_view getUri() { return uri; }
@@ -541,6 +540,15 @@ private:
         HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()), server(server) {
+            if (server.verboseLogging) {
+                std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
+            }
+        }
+
+        ~HttpHeaderReader() noexcept {
+            if (server.verboseLogging) {
+                std::cerr << "remove connection " << socket->remote_endpoint() << std::endl;
+            }
         }
 
         void startCancelTimer() {
@@ -571,6 +579,8 @@ private:
                 removeFromServer();
                 return;
             }
+
+            buffer.reset();
 
             boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
                 [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
@@ -793,6 +803,7 @@ class BasicServer {
 public:
     BasicServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : udpServer(ioService), httpServer(ioService, endpoint) {
+        httpServer.setRequestHandler(std::bind(&BasicServer::handleRequest, this, std::placeholders::_1));
     }
 
     void runAsync() {
@@ -974,6 +985,22 @@ private:
                         removeFromServer();
                     });
             });*/
+    }
+
+    void handleRequest(typename SimpleHttpServer<SendHttpResponses>::HttpRequest request) {
+        std::cout << "REQUEST " << request.getUri() << std::endl;
+        std::cout << request.getHeaderFields() << std::endl;
+
+        static constexpr auto response =
+            "HTTP/1.1 200 OK\r\n"
+            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n"
+            "\r\nHello!"sv;
+
+        boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+            [requestCapture = std::move(request)] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+            });
     }
 
     UdpServer<Allocator> udpServer;
