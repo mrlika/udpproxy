@@ -412,51 +412,34 @@ private:
 
 template <bool SendHttpResponses>
 class SimpleHttpServer {
-private:
-    class HttpClient;
-
 public:
     class HttpRequest {
     public:
+        explicit HttpRequest(std::shared_ptr<typename SimpleHttpServer::HttpClient> httpClient) noexcept : httpClient(httpClient) {}
+        HttpRequest(const HttpRequest&) = default;
+        HttpRequest(HttpRequest&&) = default;
+
         ~HttpRequest() {
-            if (!socket.expired()) {
-                auto it = find_if(server.httpClients.begin(), server.httpClients.end(), [socketPointer = std::shared_ptr<tcp::socket>(socket).get()] (const std::shared_ptr<HttpClient>& client) { return client->socket.get() == socketPointer; });
-                assert(it != server.httpClients.end());
-                server.httpClients.erase(it);
+            if (!httpClient.expired()) {
+                httpClient.lock()->removeFromServer();
             }
         }
 
-        HttpRequest(HttpRequest&&) = default;
-
-        std::experimental::string_view getUri() { return uri; }
-        std::experimental::string_view getHeaderFields() { return headerFields; }
-        std::weak_ptr<tcp::socket> getSocket() { return socket; }
+        std::experimental::string_view getUri() { return httpClient->uri; }
+        std::experimental::string_view getHeaderFields() { return httpClient->headerFields; }
+        tcp::socket& getSocket() { return httpClient.socket.get(); }
 
         void cancelRequestTimeoutTimer() {
-            if (!socket.expired()) {
-                timeoutTimer.cancel();
-            }
+            httpClient->timeoutTimer.cancel();
         }
 
     private:
-        friend class HttpClient;
-
-        HttpRequest(std::weak_ptr<tcp::socket> socket, std::shared_ptr<boost::asio::streambuf> headerBuffer,
-                boost::asio::system_timer &timeoutTimer, std::experimental::string_view uri,
-                std::experimental::string_view headerFields, SimpleHttpServer &server) noexcept
-                : socket(socket), headerBuffer(headerBuffer), timeoutTimer(timeoutTimer), uri(uri), headerFields(headerFields), server(server) {
-        }
-
-        std::weak_ptr<tcp::socket> socket;
-        std::shared_ptr<boost::asio::streambuf> headerBuffer;
-        boost::asio::system_timer &timeoutTimer;
-        std::experimental::string_view uri;
-        std::experimental::string_view headerFields;
-        SimpleHttpServer &server;
+        std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
     };
 
-    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : acceptor(ioService, endpoint) {}
+    typedef std::function<void(std::shared_ptr<HttpRequest>)> RequestHandler;
+
+    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) : acceptor(ioService, endpoint) {}
 
     void runAsync() {
         startAccept();
@@ -470,8 +453,8 @@ public:
     size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
     void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
-    void setRequestHandler(std::function<void(HttpRequest)> handler) { requestHandler = handler; }
-    std::function<void(HttpRequest)> getRequestHandler() { return requestHandler; }
+    void setRequestHandler(RequestHandler handler) { requestHandler = handler; }
+    RequestHandler getRequestHandler() { return requestHandler; }
 
 private:
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
@@ -538,8 +521,8 @@ private:
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
-                : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()), server(server) {
+                : server(server), socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
+                  timeoutTimer(socket->get_io_service()) {
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
             }
@@ -556,7 +539,7 @@ private:
                 return;
             }
 
-            timeoutTimer.expires_from_now(server.httpConnectionTimeout);
+            timeoutTimer.expires_from_now();
             timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
                     return;
@@ -695,7 +678,7 @@ private:
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize(HEADER_END, server.maxHttpHeaderSize - bytesRead)),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) mutable {
                     if (reference.expired()) {
                         return;
                     }
@@ -734,24 +717,23 @@ private:
                     }
 
                     if (server.requestHandler) {
-                        std::experimental::string_view httpHeaderFields = {boost::asio::buffer_cast<const char*>(buffer->data()) + 2, size - HEADER_END.length()};
-
-                        HttpRequest httpRequest(socket, buffer, timeoutTimer, uri, httpHeaderFields, server);
-
-                        server.requestHandler(std::move(httpRequest));
+                        headerFields = {boost::asio::buffer_cast<const char*>(buffer->data()) + 2, size - HEADER_END.length()};
+                        server.requestHandler(std::make_shared<HttpRequest>(this->shared_from_this()));
                     } else {
                         removeFromServer();
                     }
                 });
         }
 
+        SimpleHttpServer &server;
+
         std::shared_ptr<tcp::socket> socket;
         std::shared_ptr<boost::asio::streambuf> buffer;
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
-        SimpleHttpServer &server;
 
         std::experimental::string_view uri;
+        std::experimental::string_view headerFields;
     };
 
     class MatchStringOrSize {
@@ -795,7 +777,7 @@ private:
     size_t maxHttpClients = 0;
     bool verboseLogging = true;
 
-    std::function<void(HttpRequest)> requestHandler;
+    RequestHandler requestHandler;
 };
 
 template <typename Allocator, bool SendHttpResponses>
@@ -987,9 +969,9 @@ private:
             });*/
     }
 
-    void handleRequest(typename SimpleHttpServer<SendHttpResponses>::HttpRequest request) {
-        std::cout << "REQUEST " << request.getUri() << std::endl;
-        std::cout << request.getHeaderFields() << std::endl;
+    void handleRequest(std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest> request) {
+        std::cout << "REQUEST " << request->getUri() << std::endl;
+        std::cout << request->getHeaderFields() << std::endl;
 
         static constexpr auto response =
             "HTTP/1.1 200 OK\r\n"
@@ -998,8 +980,9 @@ private:
             "Connection: close\r\n"
             "\r\nHello!"sv;
 
-        boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-            [requestCapture = std::move(request)] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+        boost::asio::async_write(request->getSocket(), boost::asio::buffer(response.cbegin(), response.length()),
+            [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {
+                std::cout << "DONE REQ" << std::endl;
             });
     }
 
