@@ -413,16 +413,16 @@ private:
 template <bool SendHttpResponses>
 class SimpleHttpServer {
 private:
-    class HttpHeaderReader;
+    class HttpClient;
 
 public:
     class HttpRequest {
     public:
         ~HttpRequest() {
             if (!socket.expired()) {
-                auto it = find_if(server.httpHeaderReaders.begin(), server.httpHeaderReaders.end(), [socketPointer = std::shared_ptr<tcp::socket>(socket).get()] (const std::shared_ptr<HttpHeaderReader>& reader) { return reader->socket.get() == socketPointer; });
-                assert(it != server.httpHeaderReaders.end());
-                server.httpHeaderReaders.erase(it);
+                auto it = find_if(server.httpClients.begin(), server.httpClients.end(), [socketPointer = std::shared_ptr<tcp::socket>(socket).get()] (const std::shared_ptr<HttpClient>& client) { return client->socket.get() == socketPointer; });
+                assert(it != server.httpClients.end());
+                server.httpClients.erase(it);
             }
         }
 
@@ -439,7 +439,7 @@ public:
         }
 
     private:
-        friend class HttpHeaderReader;
+        friend class HttpClient;
 
         HttpRequest(std::weak_ptr<tcp::socket> socket, std::shared_ptr<boost::asio::streambuf> headerBuffer,
                 boost::asio::system_timer &timeoutTimer, std::experimental::string_view uri,
@@ -512,18 +512,18 @@ private:
                 return; // FIXME: is it good to stop accept loop?
             }
 
-            auto reader = std::make_shared<HttpHeaderReader>(socket, *this);
-            httpHeaderReaders.emplace_back(reader);
-            reader->startCancelTimer();
+            auto client = std::make_shared<HttpClient>(socket, *this);
+            httpClients.emplace_back(client);
+            client->startCancelTimer();
 
-            if ((maxHttpClients == 0) || (httpHeaderReaders.size() <= maxHttpClients)) {
-                reader->validateHttpMethod();
+            if ((maxHttpClients == 0) || (httpClients.size() <= maxHttpClients)) {
+                client->validateHttpMethod();
             } else {
                 if (verboseLogging) {
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
                 }
 
-                reader->sendFinalHttpResponse(
+                client->sendFinalHttpResponse(
                     "HTTP/1.1 429 Too Many Requests\r\n"
                     "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                     "Content-Type: text/plain\r\n"
@@ -536,8 +536,8 @@ private:
         });
     }
 
-    struct HttpHeaderReader : public std::enable_shared_from_this<HttpHeaderReader> {
-        HttpHeaderReader(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
+    struct HttpClient : public std::enable_shared_from_this<HttpClient> {
+        HttpClient(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()), server(server) {
             if (server.verboseLogging) {
@@ -545,7 +545,7 @@ private:
             }
         }
 
-        ~HttpHeaderReader() noexcept {
+        ~HttpClient() noexcept {
             if (server.verboseLogging) {
                 std::cerr << "remove connection " << socket->remote_endpoint() << std::endl;
             }
@@ -557,7 +557,7 @@ private:
             }
 
             timeoutTimer.expires_from_now(server.httpConnectionTimeout);
-            timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e) {
+            timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
                     return;
                 }
@@ -569,9 +569,9 @@ private:
         }
 
         void removeFromServer() {
-            auto it = find_if(server.httpHeaderReaders.begin(), server.httpHeaderReaders.end(), [this] (const std::shared_ptr<HttpHeaderReader>& reader) { return reader.get() == this; });
-            assert(it != server.httpHeaderReaders.end());
-            server.httpHeaderReaders.erase(it);
+            auto it = find_if(server.httpClients.begin(), server.httpClients.end(), [this] (const std::shared_ptr<HttpClient>& client) { return client.get() == this; });
+            assert(it != server.httpClients.end());
+            server.httpClients.erase(it);
         }
 
         void sendFinalHttpResponse(std::experimental::string_view response) {
@@ -583,7 +583,7 @@ private:
             buffer.reset();
 
             boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                     if (reference.expired()) {
                         return;
                     }
@@ -601,7 +601,7 @@ private:
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -643,7 +643,7 @@ private:
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize("\r\n", server.maxHttpHeaderSize - bytesRead - "\r\n"sv.length())),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -695,7 +695,7 @@ private:
 
             boost::asio::async_read_until(*socket, *buffer,
                 UntilFunction(MatchStringOrSize(HEADER_END, server.maxHttpHeaderSize - bytesRead)),
-                [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -788,7 +788,7 @@ private:
     };
 
     tcp::acceptor acceptor;
-    std::list<std::shared_ptr<HttpHeaderReader>> httpHeaderReaders;
+    std::list<std::shared_ptr<HttpClient>> httpClients;
 
     size_t maxHttpHeaderSize = 4 * 1024;
     boost::asio::system_timer::duration httpConnectionTimeout = 1s;
@@ -958,7 +958,7 @@ private:
             "\r\n"sv;
 
         boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-            [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
+            [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
                 if (reference.expired()) {
                     return;
                 }
@@ -973,7 +973,7 @@ private:
                 }
 
                 boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
-                    [this, reference = std::weak_ptr<HttpHeaderReader>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
+                    [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
                         if (reference.expired()) {
                             return;
                         }
