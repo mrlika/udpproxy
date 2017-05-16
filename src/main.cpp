@@ -1,4 +1,4 @@
-#include <udpproxy/udpproxy.h>
+#include <udpproxy/udp_to_http_proxy_server.h>
 
 #include <boost/program_options.hpp>
 
@@ -105,7 +105,7 @@ int main(int argc, const char * const argv[]) {
 
     try {
         boost::asio::io_service ioService;
-        UdpProxy::Server server(ioService, boost::asio::ip::tcp::endpoint(address, port));
+        UdpProxy::UdpToHttpProxyServer server(ioService, boost::asio::ip::tcp::endpoint(address, port));
 
         server.setMaxHttpClients(maxClients);
         server.setMaxUdpDataSize(maxUdpDataSize);
