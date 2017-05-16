@@ -214,6 +214,31 @@ private:
         }
 
         request->cancelTimeout();
+
+        static constexpr std::experimental::string_view response =
+            "HTTP/1.1 200 OK\r\n"
+            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+            "Content-Type: application/octet-stream\r\n"
+            "Connection: close\r\n"
+            "\r\n"sv;
+
+        boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+            [this, request = request, udpEndpoint] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                if (request->getSocket().expired()) {
+                    return;
+                }
+
+                auto clientEndpoint = request->getSocket().lock()->remote_endpoint();
+
+                if (e) {
+                    if (verboseLogging) {
+                        std::cerr << "HTTP header write error for " << clientEndpoint << ": " << e.message() << std::endl;
+                    }
+                    return;
+                }
+
+                udpProxyService.startUdpToHttpClient(clientEndpoint, udpEndpoint);
+            });
     }
 
     UdpProxyService<Allocator> udpProxyService;

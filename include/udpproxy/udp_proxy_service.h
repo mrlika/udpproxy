@@ -65,6 +65,22 @@ public:
         udpInput->addClient(clientSocket);
     }
 
+    void startUdpToHttpClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
+        auto udpInputIterator = udpInputs.find(getEndpointId(udpEndpoint));
+        if (udpInputIterator == udpInputs.end()) {
+            return;
+        }
+
+        auto& clients = udpInputIterator->second->clients;
+
+        auto it = std::find_if(clients.begin(), clients.end(), [&clientEndpoint] (const std::shared_ptr<typename UdpInput::Client> &client) { return client->remoteEndpoint == clientEndpoint; });
+        if (it == clients.end()) {
+            return;
+        }
+
+        (*it)->start();
+    }
+
     void removeUdpToHttpClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
         auto udpInputIterator = udpInputs.find(getEndpointId(udpEndpoint));
         if (udpInputIterator == udpInputs.end()) {
@@ -182,6 +198,10 @@ private:
                     inputBuffer->resize(bytesRead);
 
                     for (auto& client : clients) {
+                        if (!client->isStarted) {
+                            continue;
+                        }
+
                         size_t length = client->outputBuffers.size();
 
                         if (length == 0) {
@@ -214,7 +234,6 @@ private:
         void addClient(const std::shared_ptr<tcp::socket>& socket) {
             auto client = std::make_shared<typename UdpInput::Client>(socket, udpProxyService, id, udpEndpoint);
             clients.emplace_back(client);
-            client->writeHttpHeader();
         }
 
         struct Client : public std::enable_shared_from_this<UdpInput::Client> {
@@ -291,33 +310,12 @@ private:
                      });
             }
 
-            void writeHttpHeader() {
-                static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
-                    "HTTP/1.1 200 OK\r\n"
-                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                    "Content-Type: application/octet-stream\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"sv;
+            void start() {
+                auto udpInputIterator = udpProxyService.udpInputs.find(inputId);
+                assert(udpInputIterator != udpProxyService.udpInputs.end());
+                udpInputIterator->second->start();
 
-                boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-                    [this, reference = std::weak_ptr<Client>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
-                        if (reference.expired()) {
-                            return;
-                        }
-
-                        if (e) {
-                            if (udpProxyService.verboseLogging) {
-                                std::cerr << "HTTP header write error for " << remoteEndpoint << ": " << e.message() << std::endl;
-                            }
-
-                            udpProxyService.removeUdpToHttpClient(inputId, socket);
-                            return;
-                        }
-
-                        auto udpInputIterator = udpProxyService.udpInputs.find(inputId);
-                        assert(udpInputIterator != udpProxyService.udpInputs.end());
-                        udpInputIterator->second->start();
-                    });
+                isStarted = true;
             }
 
             std::shared_ptr<tcp::socket> socket;
@@ -327,6 +325,7 @@ private:
             udp::endpoint udpEndpoint;
             std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
             bool readSomeDone = true;
+            bool isStarted = false;
         };
 
         UdpProxyService &udpProxyService;
