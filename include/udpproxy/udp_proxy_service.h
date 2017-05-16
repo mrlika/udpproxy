@@ -45,7 +45,7 @@ public:
         readClients();
     }
 
-    void addUdpToHttpClient(std::shared_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint) {
+    void addUdpToHttpClient(const std::shared_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint) {
         uint64_t inputId = getEndpointId(udpEndpoint);
 
         auto udpInputIterator = udpInputs.find(inputId);
@@ -211,14 +211,14 @@ private:
                 });
         }
 
-        void addClient(std::shared_ptr<tcp::socket>& socket) {
+        void addClient(const std::shared_ptr<tcp::socket>& socket) {
             auto client = std::make_shared<typename UdpInput::Client>(socket, udpProxyService, id, udpEndpoint);
             clients.emplace_back(client);
             client->writeHttpHeader();
         }
 
         struct Client : public std::enable_shared_from_this<UdpInput::Client> {
-            Client(std::shared_ptr<tcp::socket> &socket, UdpProxyService &udpProxyService, uint64_t inputId, const udp::endpoint& udpEndpoint) noexcept
+            Client(const std::shared_ptr<tcp::socket> &socket, UdpProxyService &udpProxyService, uint64_t inputId, const udp::endpoint& udpEndpoint) noexcept
                     : socket(socket), udpProxyService(udpProxyService), inputId(inputId), remoteEndpoint(socket->remote_endpoint()), udpEndpoint(udpEndpoint) {
                 if (udpProxyService.verboseLogging) {
                     std::cerr << "new HTTP client " << remoteEndpoint << " for " << udpEndpoint <<  std::endl;

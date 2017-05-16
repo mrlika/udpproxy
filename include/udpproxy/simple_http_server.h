@@ -33,8 +33,7 @@ public:
 
         std::experimental::string_view getUri() const noexcept { return uri; }
         std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
-        tcp::socket& getSocket() const { return *httpClient.lock()->socket.get(); }
-        bool isExpired() const noexcept { return httpClient.expired(); }
+        std::weak_ptr<tcp::socket> getSocket() const { return httpClient.expired() ? std::weak_ptr<tcp::socket>() : std::weak_ptr<tcp::socket>(httpClient.lock()->socket); }
 
         void cancelTimeout() const {
             if (!httpClient.expired()) {
@@ -132,7 +131,7 @@ private:
     }
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
-        HttpClient(std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
+        HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : server(server), socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()) {
             if (server.verboseLogging) {

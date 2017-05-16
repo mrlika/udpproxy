@@ -46,73 +46,6 @@ public:
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpProxyService.getMulticastInterfaceAddress(); }
 
 private:
-    void addUdpClient() {
-        /*try {
-            udpProxy.addUdpToHttpClient(socket, udpEndpoint);
-        } catch (const boost::system::system_error &e) {
-            std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
-            sendFinalHttpResponse(
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "UDP socket error");
-            return;
-        }*/
-    }
-
-    void parseUdpUri() {
-        /*static constexpr size_t MIN_UDP_REQUEST_LINE_SIZE = "/udp/d.d.d.d:d"sv.length() + HTTP_VERSION_ENDING.length();
-        static constexpr std::experimental::string_view STATUS_URI = "/status"sv;
-
-        // TODO: replace regex with parsing algorithm for better performance and to avoid memory allocations
-        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
-        std::cmatch match;
-        std::regex_match(uri.begin(), uri.end(), match, uriRegex);
-
-        if (match.empty()) {
-            throw ServerError("wrong URI: " + std::string(uri),
-                "HTTP/1.1 404 Not Found\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "404 Not Found");
-        }
-
-        boost::asio::ip::address address;
-        unsigned long port;
-
-        try {
-            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
-            port = std::stoul(match[2]);
-            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
-            // possible only when from_string supports string_view
-            address = boost::asio::ip::address::from_string(match[1]);
-        } catch (...) {
-            throw ServerError("wrong URI: " + std::string(uri),
-                "HTTP/1.1 404 Not Found\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "404 Not Found");
-        }
-
-        if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
-            throw ServerError("wrong URI: " + std::string(uri),
-                "HTTP/1.1 404 Not Found\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "404 Not Found");
-        }
-
-        udpEndpoint = {address, static_cast<unsigned short>(port)};*/
-    }
-
     void writeJsonStatus() {
         /*if (verboseLogging) {
             std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
@@ -196,24 +129,41 @@ private:
             });*/
     }
 
+    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest>& request) {
+        if (verboseLogging) {
+            std::cerr << "wrong URI: " << request->getUri() << std::endl;
+        }
+
+        static constexpr auto response =
+            "HTTP/1.1 404 Not Found\r\n"
+            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+            "Content-Type: text/plain\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "404 Not Found"sv;
+
+        boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response.cbegin(), response.length()),
+            [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+    }
+
     void handleRequest(std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest> request) {
         auto uri = request->getUri();
+        auto socket = request->getSocket().lock();
+
+        if (verboseLogging) {
+            std::cerr << "request: " << uri << std::endl;
+        }
 
         if (uri == "/status") {
-            static constexpr std::experimental::string_view response =
+            static constexpr auto response =
                 "HTTP/1.1 200 OK\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: text/plain\r\n"
                 "Connection: close\r\n"
                 "\r\nStatus"sv;
 
-            boost::asio::async_write(request->getSocket(), boost::asio::buffer(response.cbegin(), response.length()),
-                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {
-                    if (request->isExpired()) {
-                        return;
-                    }
-                });
-
+            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
             return;
         }
 
@@ -221,6 +171,49 @@ private:
         static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
         std::cmatch match;
         std::regex_match(uri.begin(), uri.end(), match, uriRegex);
+
+        if (match.empty()) {
+            writeNotFoundResponse(request);
+            return;
+        }
+
+        boost::asio::ip::address address;
+        unsigned long port;
+
+        try {
+            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
+            port = std::stoul(match[2]);
+            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
+            // possible only when from_string supports string_view
+            address = boost::asio::ip::address::from_string(match[1]);
+        } catch (...) {
+            writeNotFoundResponse(request);
+            return;
+        }
+
+        if ((port == 0) || (port > std::numeric_limits<uint16_t>::max())) {
+            writeNotFoundResponse(request);
+            return;
+        }
+
+        udp::endpoint udpEndpoint = {address, static_cast<unsigned short>(port)};
+
+        try {
+            udpProxyService.addUdpToHttpClient(socket, udpEndpoint);
+        } catch (const boost::system::system_error &e) {
+            std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
+            static constexpr auto response =
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "UDP socket error"sv;
+            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+        }
+
+        request->cancelTimeout();
     }
 
     UdpProxyService<Allocator> udpProxyService;
