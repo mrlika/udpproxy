@@ -1,7 +1,7 @@
 #pragma once
 
 #include "simple_http_server.h"
-#include "udp_proxy_service.h"
+#include "udp_to_tcp_proxy_server.h"
 
 #include <regex>
 
@@ -11,12 +11,12 @@ template <typename Allocator, bool SendHttpResponses>
 class BasicUdpToHttpProxyServer {
 public:
     BasicUdpToHttpProxyServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : udpProxyService(ioService), httpServer(ioService, endpoint) {
+            : udpServer(ioService), httpServer(ioService, endpoint) {
         httpServer.setRequestHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequest, this, std::placeholders::_1));
     }
 
     void runAsync() {
-        udpProxyService.runAsync();
+        udpServer.runAsync();
         httpServer.runAsync();
     }
 
@@ -24,26 +24,26 @@ public:
     size_t getMaxHttpHeaderSize() const noexcept { return httpServer.getMaxHttpHeaderSize(); }
     void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpServer.setHttpConnectionTimeout(value); }
     boost::asio::system_timer::duration getHttpConnectionTimeout() const noexcept { return httpServer.getHttpConnectionTimeout(); }
-    void setMaxUdpDataSize(size_t value) { udpProxyService.setMaxUdpDataSize(value); }
-    size_t getMaxUdpDataSize() const noexcept { return udpProxyService.getMaxUdpDataSize(); }
-    void setMaxOutputQueueLength(size_t value) { udpProxyService.setMaxOutputQueueLength(value); }
-    size_t getMaxOutputQueueLength() const noexcept { return udpProxyService.getMaxOutputQueueLength(); }
+    void setMaxUdpDataSize(size_t value) { udpServer.setMaxUdpDataSize(value); }
+    size_t getMaxUdpDataSize() const noexcept { return udpServer.getMaxUdpDataSize(); }
+    void setMaxOutputQueueLength(size_t value) { udpServer.setMaxOutputQueueLength(value); }
+    size_t getMaxOutputQueueLength() const noexcept { return udpServer.getMaxOutputQueueLength(); }
     void setMaxHttpClients(size_t value) { httpServer.setMaxHttpClients(value); }
     size_t getMaxHttpClients() const noexcept { return httpServer.getMaxHttpClients(); }
-    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpProxyService.setOutputQueueOverflowAlgorithm(value); }
-    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() const noexcept { return udpProxyService.getOutputQueueOverflowAlgorithm(); };
+    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpServer.setOutputQueueOverflowAlgorithm(value); }
+    OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() const noexcept { return udpServer.getOutputQueueOverflowAlgorithm(); };
     void setVerboseLogging(bool value) {
         verboseLogging = value;
-        udpProxyService.setVerboseLogging(value);
+        udpServer.setVerboseLogging(value);
         httpServer.setVerboseLogging(value);
     }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
     void setEnableStatus(bool value) { enableStatus = value; }
     bool getEnableStatus() const noexcept { return enableStatus; }
-    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpProxyService.setRenewMulticastSubscriptionInterval(value); }
-    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() const noexcept { return udpProxyService.getRenewMulticastSubscriptionInterval(); }
-    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpProxyService.setMulticastInterfaceAddress(value); }
-    boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpProxyService.getMulticastInterfaceAddress(); }
+    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpServer.setRenewMulticastSubscriptionInterval(value); }
+    boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() const noexcept { return udpServer.getRenewMulticastSubscriptionInterval(); }
+    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpServer.setMulticastInterfaceAddress(value); }
+    boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
     void writeJsonStatus() {
@@ -199,7 +199,7 @@ private:
         udp::endpoint udpEndpoint = {address, static_cast<unsigned short>(port)};
 
         try {
-            udpProxyService.addUdpToHttpClient(socket, udpEndpoint);
+            udpServer.addClient(socket, udpEndpoint);
         } catch (const boost::system::system_error &e) {
             std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
             static constexpr auto response =
@@ -237,11 +237,11 @@ private:
                     return;
                 }
 
-                udpProxyService.startUdpToHttpClient(clientEndpoint, udpEndpoint);
+                udpServer.startClient(clientEndpoint, udpEndpoint);
             });
     }
 
-    UdpProxyService<Allocator> udpProxyService;
+    UdpToTcpProxyServer<Allocator> udpServer;
     SimpleHttpServer<SendHttpResponses> httpServer;
 
     bool verboseLogging = true;
