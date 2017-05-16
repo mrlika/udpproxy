@@ -18,7 +18,7 @@ class SimpleHttpServer {
 public:
     class HttpRequest {
     public:
-        explicit HttpRequest(std::shared_ptr<typename SimpleHttpServer::HttpClient> httpClient) noexcept
+        explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept
             : httpClient(httpClient), buffer(httpClient->buffer), uri(httpClient->uri), headerFields(httpClient->headerFields) {
         }
 
