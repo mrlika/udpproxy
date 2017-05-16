@@ -415,26 +415,35 @@ class SimpleHttpServer {
 public:
     class HttpRequest {
     public:
-        explicit HttpRequest(std::shared_ptr<typename SimpleHttpServer::HttpClient> httpClient) noexcept : httpClient(httpClient) {}
+        explicit HttpRequest(std::shared_ptr<typename SimpleHttpServer::HttpClient> httpClient) noexcept
+            : httpClient(httpClient), buffer(httpClient->buffer), uri(httpClient->uri), headerFields(httpClient->headerFields) {
+        }
+
         HttpRequest(const HttpRequest&) = default;
         HttpRequest(HttpRequest&&) = default;
 
-        ~HttpRequest() {
+        ~HttpRequest() noexcept {
             if (!httpClient.expired()) {
                 httpClient.lock()->removeFromServer();
             }
         }
 
-        std::experimental::string_view getUri() { return httpClient->uri; }
-        std::experimental::string_view getHeaderFields() { return httpClient->headerFields; }
-        tcp::socket& getSocket() { return httpClient.socket.get(); }
+        std::experimental::string_view getUri() const noexcept { return uri; }
+        std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
+        tcp::socket& getSocket() const { return *httpClient.lock()->socket.get(); }
+        bool isExpired() const noexcept { return httpClient.expired(); }
 
-        void cancelRequestTimeoutTimer() {
-            httpClient->timeoutTimer.cancel();
+        void cancelTimeout() const {
+            if (!httpClient.expired()) {
+                httpClient.lock()->timeoutTimer.cancel();
+            }
         }
 
     private:
         std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
+        std::shared_ptr<boost::asio::streambuf> buffer;
+        std::experimental::string_view uri;
+        std::experimental::string_view headerFields;
     };
 
     typedef std::function<void(std::shared_ptr<HttpRequest>)> RequestHandler;
@@ -970,10 +979,7 @@ private:
     }
 
     void handleRequest(std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest> request) {
-        std::cout << "REQUEST " << request->getUri() << std::endl;
-        std::cout << request->getHeaderFields() << std::endl;
-
-        static constexpr auto response =
+        static constexpr std::experimental::string_view response =
             "HTTP/1.1 200 OK\r\n"
             "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
             "Content-Type: text/plain\r\n"
@@ -982,7 +988,9 @@ private:
 
         boost::asio::async_write(request->getSocket(), boost::asio::buffer(response.cbegin(), response.length()),
             [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {
-                std::cout << "DONE REQ" << std::endl;
+                if (request->isExpired()) {
+                    return;
+                }
             });
     }
 
