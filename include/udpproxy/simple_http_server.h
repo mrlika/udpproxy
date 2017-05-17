@@ -211,9 +211,9 @@ private:
                             throw ServerError(e.message(), "");
                         }
 
-                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer->data()), REQUEST_METHOD.length());
+                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer->data()), size);
                         if (REQUEST_METHOD != method) {
-                            throw ServerError("method not supported",
+                            throw ServerError("request method not supported",
                                 "HTTP/1.1 501 Not Implemented\r\n"
                                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                                 "Connection: close\r\n"
