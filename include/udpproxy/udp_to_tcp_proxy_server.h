@@ -20,9 +20,18 @@ enum class OutputQueueOverflowAlgorithm {
     DropData
 };
 
-template <typename Allocator>
+template <typename Allocator, typename UdpInputCustomData, typename ClientCustomData>
 class UdpToTcpProxyServer {
 public:
+    typedef std::function<void(const udp::endpoint &udpEndpoint, UdpInputCustomData &udpInputData) noexcept> NewUdpInputHandler;
+    typedef std::function<void(const udp::endpoint &udpEndpoint, UdpInputCustomData &udpInputData) noexcept> RemoveUdpInputHandler;
+    typedef std::function<void(const udp::endpoint &udpEndpoint, UdpInputCustomData &udpInputData) noexcept> StartUdpInputHandler;
+    typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> NewClientHandler;
+    typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> RemoveClientHandler;
+    typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> StartClientHandler;
+    typedef std::function<void(const udp::endpoint &udpEndpoint, size_t bytesRead, UdpInputCustomData &udpInputData) noexcept> ReadUdpInputHandler;
+    typedef std::function<void(const tcp::endpoint &clientEndpoint, size_t bytesWritten, ClientCustomData &clientData) noexcept> WriteClientHandler;
+
     explicit UdpToTcpProxyServer(boost::asio::io_service &ioService) : ioService(ioService), clientsReadTimer(ioService) {
         static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
         clientsReadBuffer = std::make_shared<std::vector<uint8_t, InputBuffersAllocator>>(CLIENT_READ_BUFFER_SIZE);
@@ -41,12 +50,30 @@ public:
     void setMulticastInterfaceAddress(boost::asio::ip::address value) noexcept { multicastInterfaceAddress = value; }
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return multicastInterfaceAddress; }
 
+    void setNewUdpInputHandler(NewUdpInputHandler handler) { newUdpInputHandler = handler; }
+    void setRemoveUdpInputHandler(RemoveUdpInputHandler handler) { removeUdpInputHandler = handler; }
+    void setStartUdpInputHandler(StartUdpInputHandler handler) { startUdpInputHandler = handler; }
+    void setNewClientHandler(NewClientHandler handler) { newClientHandler = handler; }
+    void setRemoveClientHandler(RemoveClientHandler handler) { removeClientHandler = handler; }
+    void setStartClientHandler(StartClientHandler handler) { startClientHandler = handler; }
+    void setReadUdpInputHandler(ReadUdpInputHandler handler) { readUdpInputHandler = handler; }
+    void setWriteClientHandler(WriteClientHandler handler) { writeClientHandler = handler; }
+
+    NewUdpInputHandler getNewUdpInputHandler() { return newUdpInputHandler; }
+    RemoveUdpInputHandler getRemoveUdpInputHandler() { return removeUdpInputHandler; }
+    StartUdpInputHandler getStartUdpInputHandler() { return startUdpInputHandler; }
+    NewClientHandler getNewClientHandler() { return newClientHandler; }
+    RemoveClientHandler getRemoveClientHandler() { return removeClientHandler; }
+    StartClientHandler startRemoveClientHandler() { return startClientHandler; }
+    ReadUdpInputHandler getReadUdpInputHandler() { return readUdpInputHandler; }
+    WriteClientHandler getWriteClientHandler() { return writeClientHandler; }
+
     void detectDisconnectedClientsAsync() {
         // Slowly read clients' sockets to detect disconnected ones
         startReadClients();
     }
 
-    void addClient(const std::weak_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint) {
+    void addClient(const std::weak_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint, const ClientCustomData& clientData) {
         uint64_t inputId = getEndpointId(udpEndpoint);
 
         auto udpInputIterator = udpInputs.find(inputId);
@@ -63,7 +90,7 @@ public:
             udpInput = udpInputIterator->second.get();
         }
 
-        udpInput->addClient(clientSocket);
+        udpInput->addClient(clientSocket, clientData);
     }
 
     void startClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
@@ -130,8 +157,8 @@ private:
                 std::cerr << "new UDP input: udp://" << udpEndpoint << std::endl;
             }
 
-            if (server.newUdpInputCallback) {
-                server.newUdpInputCallback(udpEndpoint);
+            if (server.newUdpInputHandler) {
+                server.newUdpInputHandler(udpEndpoint, customData);
             }
         }
 
@@ -140,8 +167,8 @@ private:
                 std::cerr << "remove UDP input: " << udpEndpoint << std::endl;
             }
 
-            if (server.removeUdpInputCallback) {
-                server.removeUdpInputCallback(udpEndpoint);
+            if (server.removeUdpInputHandler) {
+                server.removeUdpInputHandler(udpEndpoint, customData);
             }
         }
 
@@ -171,19 +198,21 @@ private:
         }
 
         void start() {
-            if (!isStarted) {
-                isStarted = true;
-
-                if (udpEndpoint.address().is_multicast() && (server.renewMulticastSubscriptionInterval != 0s)) {
-                    startRenewMulticastSubscription();
-                }
-
-                if (server.startUdpInputCallback) {
-                    server.startUdpInputCallback(udpEndpoint);
-                }
-
-                receiveUdp();
+            if (isStarted) {
+                return;
             }
+
+            isStarted = true;
+
+            if (udpEndpoint.address().is_multicast() && (server.renewMulticastSubscriptionInterval != 0s)) {
+                startRenewMulticastSubscription();
+            }
+
+            if (server.startUdpInputHandler) {
+                server.startUdpInputHandler(udpEndpoint, customData);
+            }
+
+            receiveUdp();
         }
 
         void receiveUdp() {
@@ -201,8 +230,8 @@ private:
                         return;
                     }
 
-                    if (server.readUdpInputCallback) {
-                        server.readUdpInputCallback(udpEndpoint, bytesRead);
+                    if (server.readUdpInputHandler) {
+                        server.readUdpInputHandler(udpEndpoint, bytesRead, customData);
                     }
 
                     inputBuffer->resize(bytesRead);
@@ -241,30 +270,30 @@ private:
                 });
         }
 
-        void addClient(const std::weak_ptr<tcp::socket>& socket) {
-            auto client = std::make_shared<typename UdpInput::Client>(socket, server, id, udpEndpoint);
+        void addClient(const std::weak_ptr<tcp::socket>& socket, const ClientCustomData& clientData) {
+            auto client = std::make_shared<typename UdpInput::Client>(socket, *this, clientData);
             clients.emplace_back(client);
         }
 
         struct Client : public std::enable_shared_from_this<UdpInput::Client> {
-            Client(const std::weak_ptr<tcp::socket> &socket, UdpToTcpProxyServer &server, uint64_t inputId, const udp::endpoint& udpEndpoint) noexcept
-                    : socket(socket), server(server), inputId(inputId), remoteEndpoint(socket.lock()->remote_endpoint()), udpEndpoint(udpEndpoint) {
+            Client(const std::weak_ptr<tcp::socket> &socket, UdpInput &udpInput, const ClientCustomData& customData) noexcept
+                    : socket(socket), server(udpInput.server), udpInput(udpInput), remoteEndpoint(socket.lock()->remote_endpoint()), customData(customData) {
                 if (server.verboseLogging) {
-                    std::cerr << "new TCP client " << remoteEndpoint << " for " << udpEndpoint <<  std::endl;
+                    std::cerr << "new TCP client " << remoteEndpoint << " for " << udpInput.udpEndpoint <<  std::endl;
                 }
 
-                if (server.newClientCallback) {
-                    server.newClientCallback(remoteEndpoint, udpEndpoint);
+                if (server.newClientHandler) {
+                    server.newClientHandler(remoteEndpoint, udpInput.udpEndpoint, this->customData, udpInput.customData);
                 }
             }
 
             ~Client() noexcept {
                 if (server.verboseLogging) {
-                    std::cerr << "remove TCP client " << remoteEndpoint << " for " << udpEndpoint << std::endl;
+                    std::cerr << "remove TCP client " << remoteEndpoint << " for " << udpInput.udpEndpoint << std::endl;
                 }
 
-                if (server.removeClientCallback) {
-                    server.removeClientCallback(remoteEndpoint, udpEndpoint);
+                if (server.removeClientHandler) {
+                    server.removeClientHandler(remoteEndpoint, udpInput.udpEndpoint, customData, udpInput.customData);
                 }
             }
 
@@ -288,8 +317,8 @@ private:
                             return;
                         }
 
-                        if (server.writeClientCallback) {
-                            server.writeClientCallback(remoteEndpoint, bytesSent);
+                        if (server.writeClientHandler) {
+                            server.writeClientHandler(remoteEndpoint, bytesSent, customData);
                         }
 
                         assert(buffer == outputBuffers.front());
@@ -326,21 +355,21 @@ private:
             }
 
             void start() {
-                auto udpInputIterator = server.udpInputs.find(inputId);
-                assert(udpInputIterator != server.udpInputs.end());
-                udpInputIterator->second->start();
-
+                udpInput.start();
                 isStarted = true;
+                if (server.startClientHandler) {
+                    server.startClientHandler(remoteEndpoint, udpInput.udpEndpoint, customData, udpInput.customData);
+                }
             }
 
             std::weak_ptr<tcp::socket> socket;
             UdpToTcpProxyServer &server;
-            uint64_t inputId;
+            UdpInput &udpInput;
             tcp::endpoint remoteEndpoint;
-            udp::endpoint udpEndpoint;
             std::list<std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>>> outputBuffers;
             bool readSomeDone = true;
             bool isStarted = false;
+            ClientCustomData customData;
         };
 
         UdpToTcpProxyServer &server;
@@ -352,10 +381,11 @@ private:
         std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> inputBuffer;
         bool isStarted = false;
         boost::asio::system_timer renewMulticastSubscriptionTimer;
+        UdpInputCustomData customData;
     };
 
     void removeClient(const typename UdpInput::Client *clientPointer) noexcept {
-        auto udpInputIterator = udpInputs.find(clientPointer->inputId);
+        auto udpInputIterator = udpInputs.find(clientPointer->udpInput.id);
         assert(udpInputIterator != udpInputs.end());
 
         auto& clients = udpInputIterator->second->clients;
@@ -413,13 +443,14 @@ private:
     boost::asio::system_timer::duration renewMulticastSubscriptionInterval = 0s;
     boost::asio::ip::address multicastInterfaceAddress;
 
-    std::function<void(const udp::endpoint &udpEndpoint)> newUdpInputCallback;
-    std::function<void(const udp::endpoint &udpEndpoint)> removeUdpInputCallback;
-    std::function<void(const udp::endpoint &udpEndpoint)> startUdpInputCallback;
-    std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint)> newClientCallback;
-    std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint)> removeClientCallback;
-    std::function<void(const udp::endpoint &udpEndpoint, size_t bytesRead)> readUdpInputCallback;
-    std::function<void(const tcp::endpoint &clientEndpoint, size_t bytesWritten)> writeClientCallback;
+    NewUdpInputHandler newUdpInputHandler;
+    RemoveUdpInputHandler removeUdpInputHandler;
+    StartUdpInputHandler startUdpInputHandler;
+    NewClientHandler newClientHandler;
+    RemoveClientHandler removeClientHandler;
+    StartClientHandler startClientHandler;
+    ReadUdpInputHandler readUdpInputHandler;
+    WriteClientHandler writeClientHandler;
 };
 
 }

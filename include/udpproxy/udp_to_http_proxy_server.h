@@ -13,6 +13,8 @@ public:
     BasicUdpToHttpProxyServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : udpServer(ioService), httpServer(ioService, endpoint) {
         httpServer.setRequestHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequest, this, std::placeholders::_1));
+        udpServer.setStartUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::startUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2));
+        udpServer.setReadUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::readUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
     }
 
     void runAsync() {
@@ -129,6 +131,20 @@ private:
             });*/
     }
 
+    struct UdpInputCustomData {
+        std::chrono::system_clock::time_point bitrateCalculationStart;
+        size_t bytesIn = 0;
+        double inBitrateKbit = 0;
+        size_t clientsCount = 0;
+    };
+
+    struct ClientCustomData {
+        std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest> request;
+        std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
+        size_t bytesOut = 0;
+        double outBitrateKbit = 0;
+    };
+
     void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
         if (verboseLogging) {
             std::cerr << "wrong URI: " << request->getUri() << std::endl;
@@ -199,7 +215,7 @@ private:
         udp::endpoint udpEndpoint = {address, static_cast<unsigned short>(port)};
 
         try {
-            udpServer.addClient(socket, udpEndpoint);
+            udpServer.addClient(socket, udpEndpoint, ClientCustomData{request});
         } catch (const boost::system::system_error &e) {
             std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
             static constexpr auto response =
@@ -241,7 +257,27 @@ private:
             });
     }
 
-    UdpToTcpProxyServer<Allocator> udpServer;
+    void startUdpInputHandler(const udp::endpoint &/*udpEndpoint*/, UdpInputCustomData& udpInputData) const noexcept {
+        udpInputData.bitrateCalculationStart = std::chrono::system_clock::now();
+    }
+
+    void readUdpInputHandler(const udp::endpoint &/*udpEndpoint*/, size_t bytesRead, UdpInputCustomData& udpInputData) const noexcept {
+        static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
+
+        auto now = std::chrono::system_clock::now();
+        auto duration = now - udpInputData.bitrateCalculationStart;
+
+        if (duration >= BITRATE_PERIOD) {
+            udpInputData.inBitrateKbit = 8. * udpInputData.bytesIn / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+
+            udpInputData.bitrateCalculationStart = now;
+            udpInputData.bytesIn = bytesRead;
+        } else {
+            udpInputData.bytesIn += bytesRead;
+        }
+    }
+
+    UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData> udpServer;
     SimpleHttpServer<Allocator, SendHttpResponses> httpServer;
 
     bool verboseLogging = true;

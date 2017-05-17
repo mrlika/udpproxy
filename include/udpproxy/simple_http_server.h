@@ -48,7 +48,7 @@ public:
         std::experimental::string_view headerFields;
     };
 
-    typedef std::function<void(std::shared_ptr<HttpRequest>)> RequestHandler;
+    typedef std::function<void(std::shared_ptr<HttpRequest>) noexcept> RequestHandler;
 
     SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) : acceptor(ioService, endpoint) {}
 
