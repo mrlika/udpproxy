@@ -30,7 +30,19 @@ public:
     typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> RemoveClientHandler;
     typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> StartClientHandler;
     typedef std::function<void(const udp::endpoint &udpEndpoint, size_t bytesRead, UdpInputCustomData &udpInputData) noexcept> ReadUdpInputHandler;
-    typedef std::function<void(const tcp::endpoint &clientEndpoint, size_t bytesWritten, ClientCustomData &clientData) noexcept> WriteClientHandler;
+    typedef std::function<void(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint, size_t bytesWritten, ClientCustomData &clientData, UdpInputCustomData &udpInputData) noexcept> WriteClientHandler;
+
+    struct ClientInfo {
+        const tcp::endpoint& endpoint;
+        ClientCustomData &customData;
+        size_t outputQueueLength;
+    };
+
+    struct UdpInputInfo {
+        const udp::endpoint &endpoint;
+        UdpInputCustomData &customData;
+        std::vector<ClientInfo> clients;
+    };
 
     explicit UdpToTcpProxyServer(boost::asio::io_service &ioService) : ioService(ioService), clientsReadTimer(ioService) {
         static constexpr size_t CLIENT_READ_BUFFER_SIZE = 1024;
@@ -134,8 +146,21 @@ public:
         }
     }
 
-    static uint64_t getEndpointId(const udp::endpoint &udpEndpoint) noexcept {
-        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 16) | udpEndpoint.port();
+    std::vector<UdpInputInfo> getUdpInputs() const {
+        std::vector<UdpInputInfo> result;
+        result.reserve(udpInputs.size());
+
+        for (auto& udpInput : udpInputs) {
+            std::vector<ClientInfo> clients;
+            clients.reserve(udpInput.second->clients.size());
+
+            for (auto& client : udpInput.second->clients) {
+                clients.emplace_back(ClientInfo{client->remoteEndpoint, client->customData, client->outputBuffers.size()});
+            }
+
+            result.emplace_back(UdpInputInfo{udpInput.second->udpEndpoint, udpInput.second->customData, std::move(clients)});
+        }
+        return result;
     }
 
 private:
@@ -318,7 +343,7 @@ private:
                         }
 
                         if (server.writeClientHandler) {
-                            server.writeClientHandler(remoteEndpoint, bytesSent, customData);
+                            server.writeClientHandler(remoteEndpoint, udpInput.udpEndpoint, bytesSent, customData, udpInput.customData);
                         }
 
                         assert(buffer == outputBuffers.front());
@@ -383,6 +408,10 @@ private:
         boost::asio::system_timer renewMulticastSubscriptionTimer;
         UdpInputCustomData customData;
     };
+
+    static uint64_t getEndpointId(const udp::endpoint &udpEndpoint) noexcept {
+        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 16) | udpEndpoint.port();
+    }
 
     void removeClient(const typename UdpInput::Client *clientPointer) noexcept {
         auto udpInputIterator = udpInputs.find(clientPointer->udpInput.id);

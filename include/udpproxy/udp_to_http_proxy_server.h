@@ -15,6 +15,8 @@ public:
         httpServer.setRequestHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequest, this, std::placeholders::_1));
         udpServer.setStartUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::startUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2));
         udpServer.setReadUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::readUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+        udpServer.setStartClientHandler(std::bind(&BasicUdpToHttpProxyServer::startClientHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4));
+        udpServer.setWriteClientHandler(std::bind(&BasicUdpToHttpProxyServer::writeClientHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4, std::placeholders::_5));
     }
 
     void runAsync() {
@@ -48,89 +50,6 @@ public:
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
-    void writeJsonStatus() {
-        /*if (verboseLogging) {
-            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
-        }
-
-        // TODO: optimize JSON output
-        std::ostringstream out;
-
-        out << R"({"inputs":[)";
-        bool first = true;
-        for (const auto& udpInputItem : server.udpProxy.udpInputs) {
-            if (first) {
-                first = false;
-                out << '{';
-            } else {
-                out << ",{";
-            }
-
-            const auto& udpInput = *(udpInputItem.second);
-            out << R"("endpoint":")" << udpInput.udpEndpoint << R"(",)";
-            out << R"("clients_count":)" << udpInput.clients.size() << ',';
-            out << R"("bitrate":)" << udpInput.inBitrateKbit << '}';
-        }
-        out << R"(],"clients":[)";
-        first = true;
-        for (const auto& udpInput : server.udpProxy.udpInputs) {
-            std::string udpEndpointJson = R"("udp_endpoint":")" + boost::lexical_cast<std::string>(udpInput.second->udpEndpoint) + R"(",)";
-            for (const auto& client : udpInput.second->clients) {
-                if (first) {
-                    first = false;
-                    out << '{';
-                } else {
-                    out << ",{";
-                }
-
-                out << R"("remote_endpoint":")" << client->remoteEndpoint << R"(",)";
-                out << udpEndpointJson;
-                out << R"("output_queue_length":)" << client->outputBuffers.size() << ',';
-                out << R"("bitrate":)" << client->outBitrateKbit << '}';
-            }
-        }
-        out << "]}";
-
-        // TODO: optimize to use direct buffer access without copying
-        auto response = std::make_shared<std::string>(out.str());
-
-        static constexpr std::experimental::string_view HTTP_RESPONSE_HEADER =
-            "HTTP/1.1 200 OK\r\n"
-            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-            "Content-Type: application/json\r\n"
-            "Connection: close\r\n"
-            "\r\n"sv;
-
-        boost::asio::async_write(*socket, boost::asio::buffer(HTTP_RESPONSE_HEADER.cbegin(), HTTP_RESPONSE_HEADER.length()),
-            [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
-                if (reference.expired()) {
-                    return;
-                }
-
-                if (e) {
-                    if (server.verboseLogging) {
-                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
-                    }
-
-                    removeFromServer();
-                    return;
-                }
-
-                boost::asio::async_write(*socket, boost::asio::buffer(response->c_str(), response->length()),
-                    [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), response = response] (const boost::system::error_code &e, std::size_t bytesSent) {
-                        if (reference.expired()) {
-                            return;
-                        }
-
-                        if (e && server.verboseLogging) {
-                            std::cerr << "status HTTP body write error: " << e.message() << std::endl;
-                        }
-
-                        removeFromServer();
-                    });
-            });*/
-    }
-
     struct UdpInputCustomData {
         std::chrono::system_clock::time_point bitrateCalculationStart;
         size_t bytesIn = 0;
@@ -144,6 +63,84 @@ private:
         size_t bytesOut = 0;
         double outBitrateKbit = 0;
     };
+
+    void writeJsonStatus(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
+        auto socket = request->getSocket().lock();
+
+        if (verboseLogging) {
+            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
+        }
+
+        static constexpr std::experimental::string_view header =
+            "HTTP/1.1 200 OK\r\n"
+            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+            "Content-Type: application/json\r\n"
+            "Connection: close\r\n"
+            "\r\n"sv;
+
+        // TODO: optimize JSON output
+        std::ostringstream json;
+
+        json << R"({"inputs":[)";
+        bool first = true;
+        auto udpInputs = udpServer.getUdpInputs();
+        for (const auto& udpInput : udpInputs) {
+            if (first) {
+                first = false;
+                json << '{';
+            } else {
+                json << ",{";
+            }
+
+            json << R"("endpoint":")" << udpInput.endpoint << R"(",)";
+            json << R"("clients_count":)" << udpInput.clients.size() << ',';
+            json << R"("bitrate":)" << udpInput.customData.inBitrateKbit << '}';
+        }
+
+        json << R"(],"clients":[)";
+
+        first = true;
+        for (const auto& udpInput : udpInputs) {
+            for (const auto& client : udpInput.clients) {
+                if (first) {
+                    first = false;
+                    json << '{';
+                } else {
+                    json << ",{";
+                }
+
+                json << R"("remote_endpoint":")" << client.endpoint << R"(",)";
+                json << R"("udp_endpoint":")" << udpInput.endpoint << R"(",)";
+                json << R"("output_queue_length":)" << client.outputQueueLength << ',';
+                json << R"("bitrate":)" << client.customData.outBitrateKbit << '}';
+            }
+        }
+        json << "]}";
+
+        // TODO: optimize to use direct buffer access without copying
+        auto response = std::make_shared<std::string>(json.str());
+
+        boost::asio::async_write(*socket, boost::asio::buffer(header.cbegin(), header.length()),
+            [verboseLogging = verboseLogging, request = request, response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                if (request->getSocket().expired()) {
+                    return;
+                }
+
+                if (e) {
+                    if (verboseLogging) {
+                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
+                    }
+                    return;
+                }
+
+                boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response->c_str(), response->length()),
+                    [verboseLogging = verboseLogging, request = request, response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                        if (e && verboseLogging) {
+                            std::cerr << "status HTTP body write error: " << e.message() << std::endl;
+                        }
+                    });
+            });
+    }
 
     void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
         if (verboseLogging) {
@@ -171,15 +168,7 @@ private:
         }
 
         if (uri == "/status") {
-            static constexpr auto response =
-                "HTTP/1.1 200 OK\r\n"
-                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n"
-                "\r\nStatus"sv;
-
-            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+            writeJsonStatus(request);
             return;
         }
 
@@ -274,6 +263,26 @@ private:
             udpInputData.bytesIn = bytesRead;
         } else {
             udpInputData.bytesIn += bytesRead;
+        }
+    }
+
+    void startClientHandler(const tcp::endpoint &/*clientEndpoint*/, const udp::endpoint &/*udpEndpoint*/, ClientCustomData &clientData, UdpInputCustomData &/*udpInputData*/) const noexcept {
+        clientData.bitrateCalculationStart = std::chrono::system_clock::now();
+    }
+
+    void writeClientHandler(const tcp::endpoint &/*clientEndpoint*/, const udp::endpoint &/*udpEndpoint*/, size_t bytesWritten, ClientCustomData &clientData, UdpInputCustomData &/*udpInputData*/) const noexcept {
+        static constexpr std::chrono::system_clock::duration BITRATE_PERIOD = 5s;
+
+        auto now = std::chrono::system_clock::now();
+        auto duration = now - clientData.bitrateCalculationStart;
+
+        if (duration >= BITRATE_PERIOD) {
+            clientData.outBitrateKbit = 8. * clientData.bytesOut / std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+
+            clientData.bitrateCalculationStart = now;
+            clientData.bytesOut = bytesWritten;
+        } else {
+            clientData.bytesOut += bytesWritten;
         }
     }
 
