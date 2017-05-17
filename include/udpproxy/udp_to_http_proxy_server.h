@@ -16,7 +16,7 @@ public:
     }
 
     void runAsync() {
-        udpServer.runAsync();
+        udpServer.detectDisconnectedClientsAsync();
         httpServer.runAsync();
     }
 

@@ -41,8 +41,9 @@ public:
     void setMulticastInterfaceAddress(boost::asio::ip::address value) noexcept { multicastInterfaceAddress = value; }
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return multicastInterfaceAddress; }
 
-    void runAsync() {
-        readClients();
+    void detectDisconnectedClientsAsync() {
+        // Slowly read clients' sockets to detect disconnected ones
+        startReadClients();
     }
 
     void addClient(const std::weak_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint) {
@@ -368,9 +369,7 @@ private:
         }
     }
 
-    void readClients() {
-        // Slowly read clients' sockets to detect disconnected ones
-
+    void startReadClients() {
         static constexpr boost::asio::system_timer::duration CLIENT_READ_PERIOD = 5s;
 
         clientsReadTimer.expires_from_now(CLIENT_READ_PERIOD);
@@ -379,16 +378,26 @@ private:
                 return;
             }
 
-            for (auto& udpInput : udpInputs) {
-                for (auto& client : udpInput.second->clients) {
-                    // TODO: remove expired clients
-                    if (!client->socket.expired()) {
-                        client->doReadCheck();
+            for (auto udpInputIt = udpInputs.begin(); udpInputIt != udpInputs.end();) {
+                auto& clients = udpInputIt->second->clients;
+                for (auto clientIt = clients.begin(); clientIt != clients.end();) {
+                    auto& client = *clientIt->get();
+                    if (!client.socket.expired()) {
+                        client.doReadCheck();
+                        ++clientIt;
+                    } else {
+                        clientIt = clients.erase(clientIt);
                     }
+                }
+
+                if (clients.empty()) {
+                    udpInputIt = udpInputs.erase(udpInputIt);
+                } else {
+                    ++udpInputIt;
                 }
             }
 
-            readClients();
+            startReadClients();
         });
     }
 
