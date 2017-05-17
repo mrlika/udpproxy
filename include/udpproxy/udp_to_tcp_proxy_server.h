@@ -78,7 +78,12 @@ public:
             return;
         }
 
-        (*it)->start();
+        try {
+            (*it)->start();
+        } catch (...) {
+            removeClient(it->get());
+            throw;
+        }
     }
 
     void removeClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
@@ -99,6 +104,10 @@ public:
         if (clients.empty()) {
             udpInputs.erase(udpInputIterator);
         }
+    }
+
+    static uint64_t getEndpointId(const udp::endpoint &udpEndpoint) noexcept {
+        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 16) | udpEndpoint.port();
     }
 
 private:
@@ -260,7 +269,8 @@ private:
 
             void startWriteData(std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> &buffer) {
                 if (socket.expired()) {
-                    server.removeClient(this, inputId);
+                    server.removeClient(this);
+                    return;
                 }
 
                 boost::asio::async_write(*socket.lock(), boost::asio::buffer(buffer->data(), buffer->size()),
@@ -273,7 +283,7 @@ private:
                             if (server.verboseLogging) {
                                 std::cerr << "write error for " << remoteEndpoint << ": " << e.message() << std::endl;
                             }
-                            server.removeClient(this, inputId);
+                            server.removeClient(this);
                             return;
                         }
 
@@ -310,7 +320,7 @@ private:
                             std::cerr << "error reading client " << remoteEndpoint << ": " << e.message() << std::endl;
                         }
 
-                        server.removeClient(this, inputId);
+                        server.removeClient(this);
                      });
             }
 
@@ -343,12 +353,8 @@ private:
         boost::asio::system_timer renewMulticastSubscriptionTimer;
     };
 
-    static uint64_t getEndpointId(const udp::endpoint &udpEndpoint) noexcept {
-        return (static_cast<uint64_t>(udpEndpoint.address().to_v4().to_ulong()) << 16) | udpEndpoint.port();
-    }
-
-    void removeClient(const typename UdpInput::Client *clientPointer, uint64_t inputId) noexcept {
-        auto udpInputIterator = udpInputs.find(inputId);
+    void removeClient(const typename UdpInput::Client *clientPointer) noexcept {
+        auto udpInputIterator = udpInputs.find(clientPointer->inputId);
         assert(udpInputIterator != udpInputs.end());
 
         auto& clients = udpInputIterator->second->clients;
