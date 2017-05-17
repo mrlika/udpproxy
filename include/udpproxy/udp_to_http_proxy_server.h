@@ -168,7 +168,11 @@ private:
         }
 
         if (uri == "/status") {
-            writeJsonStatus(request);
+            if (enableStatus) {
+                writeJsonStatus(request);
+            } else {
+                writeNotFoundResponse(request);
+            }
             return;
         }
 
