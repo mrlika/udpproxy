@@ -13,7 +13,7 @@ namespace UdpProxy {
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 
-template <bool SendHttpResponses>
+template <typename Allocator, bool SendHttpResponses>
 class SimpleHttpServer {
 public:
     class HttpRequest {
@@ -43,7 +43,7 @@ public:
 
     private:
         std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
-        std::shared_ptr<boost::asio::streambuf> buffer;
+        std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
         std::experimental::string_view uri;
         std::experimental::string_view headerFields;
     };
@@ -132,7 +132,7 @@ private:
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
-                : server(server), socket(socket), buffer(std::make_shared<boost::asio::streambuf>(server.maxHttpHeaderSize)),
+                : server(server), socket(socket), buffer(std::make_shared<boost::asio::basic_streambuf<Allocator>>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()) {
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
@@ -339,7 +339,7 @@ private:
         SimpleHttpServer &server;
 
         std::shared_ptr<tcp::socket> socket;
-        std::shared_ptr<boost::asio::streambuf> buffer;
+        std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
         size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
 

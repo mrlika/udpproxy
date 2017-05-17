@@ -129,7 +129,7 @@ private:
             });*/
     }
 
-    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest>& request) {
+    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
         if (verboseLogging) {
             std::cerr << "wrong URI: " << request->getUri() << std::endl;
         }
@@ -146,7 +146,7 @@ private:
             [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
     }
 
-    void handleRequest(std::shared_ptr<typename SimpleHttpServer<SendHttpResponses>::HttpRequest> request) {
+    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest> request) {
         auto uri = request->getUri();
         auto socket = request->getSocket().lock();
 
@@ -242,7 +242,7 @@ private:
     }
 
     UdpToTcpProxyServer<Allocator> udpServer;
-    SimpleHttpServer<SendHttpResponses> httpServer;
+    SimpleHttpServer<Allocator, SendHttpResponses> httpServer;
 
     bool verboseLogging = true;
     bool enableStatus = false;
