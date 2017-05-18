@@ -1,11 +1,12 @@
 #pragma once
 
+#include "http_header_parser.h"
+
 #include <boost/asio.hpp>
 #include <boost/asio/system_timer.hpp>
 
 #include <iostream>
 #include <list>
-#include <streambuf>
 
 #include "version.h"
 
@@ -77,28 +78,6 @@ private:
     typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
     typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
 
-    class ServerError : public std::runtime_error {
-    private:
-        std::experimental::string_view httpResponse;
-
-    public:
-        explicit ServerError(const std::string& message, std::experimental::string_view httpResponse)
-                : std::runtime_error(message), httpResponse(SendHttpResponses ? httpResponse : std::experimental::string_view()) {
-        }
-
-        explicit ServerError(const char *message, std::experimental::string_view httpResponse)
-                : std::runtime_error(message), httpResponse(SendHttpResponses ? httpResponse : std::experimental::string_view()) {
-        }
-
-        std::experimental::string_view http_response() const noexcept {
-            if (SendHttpResponses) {
-                return httpResponse;
-            } else {
-                return {};
-            }
-        }
-    };
-
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
 
@@ -139,7 +118,7 @@ private:
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : server(server), socket(socket), buffer(std::make_shared<boost::asio::basic_streambuf<Allocator>>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()), matchHttpHeader((server.maxHttpHeaderSize)) {
+                  timeoutTimer(socket->get_io_service()), httpHeaderParser((server.maxHttpHeaderSize)) {
             buffer->prepare(server.maxHttpHeaderSize);
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
@@ -199,7 +178,7 @@ private:
 
         void validateHttpHeader() {
             boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(matchHttpHeader),
+                UntilFunction(httpHeaderParser),
                 [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t /*size*/) {
                     if (reference.expired()) {
                         return;
@@ -223,7 +202,7 @@ private:
                         return;
                     }
 
-                    if (!matchHttpHeader.isSucceeded()) {
+                    if (!httpHeaderParser.isSucceeded()) {
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: request header size is too large" << std::endl;
                         }
@@ -239,10 +218,10 @@ private:
                     }
 
                     if (server.requestHandler) {
-                        httpMethod = matchHttpHeader.getMethod();
-                        httpUri = matchHttpHeader.getUri();
-                        protocolVersion = matchHttpHeader.getProtocolVersion();
-                        httpHeaderFields = matchHttpHeader.getHeaderFields();
+                        httpMethod = httpHeaderParser.getMethod();
+                        httpUri = httpHeaderParser.getUri();
+                        protocolVersion = httpHeaderParser.getProtocolVersion();
+                        httpHeaderFields = httpHeaderParser.getHeaderFields();
                         server.requestHandler(std::make_shared<HttpRequest>(this->shared_from_this()));
                     } else {
                         removeFromServer();
@@ -250,179 +229,13 @@ private:
                 });
         }
 
-        template <typename Iterator>
-        class MatchHttpHeader {
-        public:
-            explicit MatchHttpHeader(size_t maxHeaderSize) noexcept
-                    : maxHeaderSize(maxHeaderSize),
-                      currentMatcher(std::bind(&MatchHttpHeader::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
-            }
-
-            std::pair<Iterator, bool> operator()(Iterator begin, Iterator end) noexcept {
-                return currentMatcher(begin, end);
-            }
-
-            bool isSucceeded() { return success; }
-            std::experimental::string_view getMethod() { return {methodBegin, static_cast<size_t>(methodEnd - methodBegin)}; }
-            std::experimental::string_view getUri() { return {uriBegin, static_cast<size_t>(uriEnd - uriBegin)}; }
-            std::experimental::string_view getProtocolVersion() { return {protocolVersionBegin, static_cast<size_t>(protocolVersionEnd - protocolVersionBegin)}; }
-            std::experimental::string_view getHeaderFields() { return {headerFieldsBegin, static_cast<size_t>(headerFieldsEnd - headerFieldsBegin)}; }
-
-        private:
-            std::pair<Iterator, bool> methodMatcher(Iterator begin, Iterator end) noexcept {
-                if (methodBegin == nullptr) {
-                    methodBegin = &*begin;
-                }
-
-                Iterator i = begin;
-
-                while (i != end) {
-                    if (++bytesRead == maxHeaderSize) {
-                        return std::make_pair(i, true);
-                    }
-
-                    char c = *i;
-
-                    // TODO: validate METHOD chars
-
-                    if (c == ' ') {
-                        methodEnd =  &*i;
-                        currentMatcher = std::bind(&MatchHttpHeader::uriMatcher, this, std::placeholders::_1, std::placeholders::_2);
-                        i++;
-                        return uriMatcher(i, end);
-                    }
-
-                    i++;
-                }
-
-                return std::make_pair(i, false);
-            }
-
-            std::pair<Iterator, bool> uriMatcher(Iterator begin, Iterator end) noexcept {
-                if (uriBegin == nullptr) {
-                    uriBegin = &*begin;
-                }
-
-                Iterator i = begin;
-
-                while (i != end) {
-                    if (++bytesRead == maxHeaderSize) {
-                        return std::make_pair(i, true);
-                    }
-
-                    char c = *i;
-
-                    // TODO: validate URI chars
-
-                    if (c == ' ') {
-                        uriEnd =  &*i;
-                        currentMatcher = std::bind(&MatchHttpHeader::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
-                        i++;
-                        bytesRead++;
-                        return protocolVersionMatcher(i, end);
-                    }
-
-                    i++;
-                }
-
-                return std::make_pair(i, false);
-            }
-
-            std::pair<Iterator, bool> protocolVersionMatcher(Iterator begin, Iterator end) noexcept {
-                if (protocolVersionBegin == nullptr) {
-                    protocolVersionBegin = &*begin;
-                }
-
-                Iterator i = begin;
-
-                while (i != end) {
-                    if (++bytesRead == maxHeaderSize) {
-                        return std::make_pair(i, true);
-                    }
-
-                    char c = *i;
-
-                    // TODO: validate HTTP version chars
-
-                    if ((previousChar == '\r') && (c == '\n')) {
-                        protocolVersionEnd =  &*(i-1);
-                        currentMatcher = std::bind(&MatchHttpHeader::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
-                        previousChar ='\n';
-                        i++;
-                        bytesRead++;
-                        return headerFieldsMatcher(i, end);
-                    }
-
-                    previousChar = c;
-                    i++;
-                }
-
-                return std::make_pair(i, false);
-            }
-
-            std::pair<Iterator, bool> headerFieldsMatcher(Iterator begin, Iterator end) noexcept {
-                if (headerFieldsBegin == nullptr) {
-                    headerFieldsBegin = &*begin;
-                }
-
-                Iterator i = begin;
-
-                while (i != end) {
-                    char c = *i;
-
-                    // TODO: split and validate header fields
-
-                    if ((previousChar == '\r') && (c == '\n')) {
-                        if (newLine) {
-                            headerFieldsEnd =  &*(i-1);
-                            success = true;
-                            return std::make_pair(i, true);
-                        } else {
-                            newLine = true;
-                        }
-                    } else if ((newLine != true) || (previousChar != '\n') || (c != '\r')) {
-                        newLine = false;
-                    }
-
-                    previousChar = c;
-                    i++;
-
-                    if (++bytesRead == maxHeaderSize) {
-                        return std::make_pair(i, true);
-                    }
-                }
-
-                return std::make_pair(i, false);
-            }
-
-            size_t maxHeaderSize;
-            size_t bytesRead = 0;
-            std::function<std::pair<Iterator, bool>(Iterator begin, Iterator end) noexcept> currentMatcher;
-
-            typename std::iterator_traits<Iterator>::pointer methodBegin = nullptr;
-            typename std::iterator_traits<Iterator>::pointer methodEnd = nullptr;
-
-            typename std::iterator_traits<Iterator>::pointer uriBegin = nullptr;
-            typename std::iterator_traits<Iterator>::pointer uriEnd = nullptr;
-
-            typename std::iterator_traits<Iterator>::pointer protocolVersionBegin = nullptr;
-            typename std::iterator_traits<Iterator>::pointer protocolVersionEnd = nullptr;
-
-            typename std::iterator_traits<Iterator>::pointer headerFieldsBegin = nullptr;
-            typename std::iterator_traits<Iterator>::pointer headerFieldsEnd = nullptr;
-
-            char previousChar = 0;
-            bool newLine = true;
-            bool success = false;
-        };
-
         SimpleHttpServer &server;
 
         std::shared_ptr<tcp::socket> socket;
         std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
         boost::asio::system_timer timeoutTimer;
 
-        MatchHttpHeader<UntilIterator> matchHttpHeader;
+        HttpHeaderParser<UntilIterator> httpHeaderParser;
         std::experimental::string_view httpMethod;
         std::experimental::string_view httpUri;
         std::experimental::string_view protocolVersion;
