@@ -223,7 +223,7 @@ private:
                         return;
                     }
 
-                    if (!matchHttpHeader.success) {
+                    if (!matchHttpHeader.isSucceeded()) {
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: request header size is too large" << std::endl;
                         }
@@ -239,10 +239,10 @@ private:
                     }
 
                     if (server.requestHandler) {
-                        httpMethod = {matchHttpHeader.methodBegin, static_cast<size_t>(matchHttpHeader.methodEnd - matchHttpHeader.methodBegin)};
-                        httpUri = {matchHttpHeader.uriBegin, static_cast<size_t>(matchHttpHeader.uriEnd - matchHttpHeader.uriBegin)};
-                        protocolVersion = {matchHttpHeader.protocolVersionBegin, static_cast<size_t>(matchHttpHeader.protocolVersionEnd - matchHttpHeader.protocolVersionBegin)};
-                        httpHeaderFields = {matchHttpHeader.headerFieldsBegin, static_cast<size_t>(matchHttpHeader.headerFieldsEnd - matchHttpHeader.headerFieldsBegin)};
+                        httpMethod = matchHttpHeader.getMethod();
+                        httpUri = matchHttpHeader.getUri();
+                        protocolVersion = matchHttpHeader.getProtocolVersion();
+                        httpHeaderFields = matchHttpHeader.getHeaderFields();
                         server.requestHandler(std::make_shared<HttpRequest>(this->shared_from_this()));
                     } else {
                         removeFromServer();
@@ -250,6 +250,7 @@ private:
                 });
         }
 
+        template <typename Iterator>
         class MatchHttpHeader {
         public:
             explicit MatchHttpHeader(size_t maxHeaderSize) noexcept
@@ -257,16 +258,23 @@ private:
                       currentMatcher(std::bind(&MatchHttpHeader::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
             }
 
-            std::pair<UntilIterator, bool> operator()(UntilIterator begin, UntilIterator end) noexcept {
+            std::pair<Iterator, bool> operator()(Iterator begin, Iterator end) noexcept {
                 return currentMatcher(begin, end);
             }
 
-            std::pair<UntilIterator, bool> methodMatcher(UntilIterator begin, UntilIterator end) noexcept {
+            bool isSucceeded() { return success; }
+            std::experimental::string_view getMethod() { return {methodBegin, static_cast<size_t>(methodEnd - methodBegin)}; }
+            std::experimental::string_view getUri() { return {uriBegin, static_cast<size_t>(uriEnd - uriBegin)}; }
+            std::experimental::string_view getProtocolVersion() { return {protocolVersionBegin, static_cast<size_t>(protocolVersionEnd - protocolVersionBegin)}; }
+            std::experimental::string_view getHeaderFields() { return {headerFieldsBegin, static_cast<size_t>(headerFieldsEnd - headerFieldsBegin)}; }
+
+        private:
+            std::pair<Iterator, bool> methodMatcher(Iterator begin, Iterator end) noexcept {
                 if (methodBegin == nullptr) {
                     methodBegin = &*begin;
                 }
 
-                UntilIterator i = begin;
+                Iterator i = begin;
 
                 while (i != end) {
                     if (++bytesRead == maxHeaderSize) {
@@ -290,12 +298,12 @@ private:
                 return std::make_pair(i, false);
             }
 
-            std::pair<UntilIterator, bool> uriMatcher(UntilIterator begin, UntilIterator end) noexcept {
+            std::pair<Iterator, bool> uriMatcher(Iterator begin, Iterator end) noexcept {
                 if (uriBegin == nullptr) {
                     uriBegin = &*begin;
                 }
 
-                UntilIterator i = begin;
+                Iterator i = begin;
 
                 while (i != end) {
                     if (++bytesRead == maxHeaderSize) {
@@ -320,12 +328,12 @@ private:
                 return std::make_pair(i, false);
             }
 
-            std::pair<UntilIterator, bool> protocolVersionMatcher(UntilIterator begin, UntilIterator end) noexcept {
+            std::pair<Iterator, bool> protocolVersionMatcher(Iterator begin, Iterator end) noexcept {
                 if (protocolVersionBegin == nullptr) {
                     protocolVersionBegin = &*begin;
                 }
 
-                UntilIterator i = begin;
+                Iterator i = begin;
 
                 while (i != end) {
                     if (++bytesRead == maxHeaderSize) {
@@ -352,12 +360,12 @@ private:
                 return std::make_pair(i, false);
             }
 
-            std::pair<UntilIterator, bool> headerFieldsMatcher(UntilIterator begin, UntilIterator end) noexcept {
+            std::pair<Iterator, bool> headerFieldsMatcher(Iterator begin, Iterator end) noexcept {
                 if (headerFieldsBegin == nullptr) {
                     headerFieldsBegin = &*begin;
                 }
 
-                UntilIterator i = begin;
+                Iterator i = begin;
 
                 while (i != end) {
                     char c = *i;
@@ -389,19 +397,19 @@ private:
 
             size_t maxHeaderSize;
             size_t bytesRead = 0;
-            std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> currentMatcher;
+            std::function<std::pair<Iterator, bool>(Iterator begin, Iterator end) noexcept> currentMatcher;
 
-            const char* methodBegin = nullptr;
-            const char* methodEnd = nullptr;
+            typename std::iterator_traits<Iterator>::pointer methodBegin = nullptr;
+            typename std::iterator_traits<Iterator>::pointer methodEnd = nullptr;
 
-            const char* uriBegin = nullptr;
-            const char* uriEnd = nullptr;
+            typename std::iterator_traits<Iterator>::pointer uriBegin = nullptr;
+            typename std::iterator_traits<Iterator>::pointer uriEnd = nullptr;
 
-            const char* protocolVersionBegin = nullptr;
-            const char* protocolVersionEnd = nullptr;
+            typename std::iterator_traits<Iterator>::pointer protocolVersionBegin = nullptr;
+            typename std::iterator_traits<Iterator>::pointer protocolVersionEnd = nullptr;
 
-            const char* headerFieldsBegin = nullptr;
-            const char* headerFieldsEnd = nullptr;
+            typename std::iterator_traits<Iterator>::pointer headerFieldsBegin = nullptr;
+            typename std::iterator_traits<Iterator>::pointer headerFieldsEnd = nullptr;
 
             char previousChar = 0;
             bool newLine = true;
@@ -414,7 +422,7 @@ private:
         std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
         boost::asio::system_timer timeoutTimer;
 
-        MatchHttpHeader matchHttpHeader;
+        MatchHttpHeader<UntilIterator> matchHttpHeader;
         std::experimental::string_view httpMethod;
         std::experimental::string_view httpUri;
         std::experimental::string_view protocolVersion;
