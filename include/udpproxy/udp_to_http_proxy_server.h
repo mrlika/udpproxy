@@ -164,7 +164,31 @@ private:
         auto socket = request->getSocket().lock();
 
         if (verboseLogging) {
-            std::cerr << "request: " << uri << std::endl;
+            std::cerr << "request: " << request->getMethod() << ' ' << uri << ' ' << request->getProtocolVersion() << std::endl;
+        }
+
+        if (request->getMethod() != "GET") {
+            auto response =
+                "HTTP/1.1 501 Not Implemented\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Connection: close\r\n"
+                "\r\n"sv;
+
+            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+            return;
+        } else if (request->getProtocolVersion() != "HTTP/1.1") {
+            auto response =
+                "HTTP/1.1 505 HTTP Version Not Supported\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Only HTTP/1.1 is supported"sv;
+
+            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
+                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+            return;
         }
 
         if (uri == "/status") {
