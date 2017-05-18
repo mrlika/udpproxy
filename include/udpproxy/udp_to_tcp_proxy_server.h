@@ -76,7 +76,7 @@ public:
     StartUdpInputHandler getStartUdpInputHandler() { return startUdpInputHandler; }
     NewClientHandler getNewClientHandler() { return newClientHandler; }
     RemoveClientHandler getRemoveClientHandler() { return removeClientHandler; }
-    StartClientHandler startRemoveClientHandler() { return startClientHandler; }
+    StartClientHandler getStartClientHandler() { return startClientHandler; }
     ReadUdpInputHandler getReadUdpInputHandler() { return readUdpInputHandler; }
     WriteClientHandler getWriteClientHandler() { return writeClientHandler; }
 
@@ -369,13 +369,14 @@ private:
                             return;
                         }
 
-                        if (!e) {
-                            return;
-                        } else if (server.verboseLogging) {
-                            std::cerr << "error reading client " << remoteEndpoint << ": " << e.message() << std::endl;
+                        if (e) {
+                            if (server.verboseLogging) {
+                                std::cerr << "error reading client " << remoteEndpoint << ": " << e.message() << std::endl;
+                            }
+                            server.removeClient(this);
                         }
 
-                        server.removeClient(this);
+                        readSomeDone = true;
                      });
             }
 
