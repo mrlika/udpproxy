@@ -1,9 +1,9 @@
 # udpproxy
 UDP proxy utility like udpxy implemented with asynchronous I/O (Boost.Asio)
 
-Single threaded application (like Node.js). Can be used as C++ library - everything implemented in single header file (Boost.Asio required).
+Better buffer management model, comparing to udpxy, provides more reliable data transfer. Single threaded application (like Node.js). Can be used as C++ library for easy embedding into applications.
 
-Options:
+Options:  
   -h [ --help ]                       Print help message  
   -p [ --port ] arg (=5000)           Port to listen on  
   -a [ --listen ] arg (=0.0.0.0)      Address to listen on  
