@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <list>
+#include <streambuf>
 
 #include "version.h"
 
@@ -19,7 +20,8 @@ public:
     class HttpRequest {
     public:
         explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept
-            : httpClient(httpClient), buffer(httpClient->buffer), uri(httpClient->uri), headerFields(httpClient->headerFields) {
+            : httpClient(httpClient), buffer(httpClient->buffer), method(httpClient->httpMethod), uri(httpClient->httpUri),
+              protocolVersion(httpClient->protocolVersion), headerFields(httpClient->httpHeaderFields) {
         }
 
         HttpRequest(const HttpRequest&) = default;
@@ -31,7 +33,9 @@ public:
             }
         }
 
+        std::experimental::string_view getMethod() const noexcept { return method; }
         std::experimental::string_view getUri() const noexcept { return uri; }
+        std::experimental::string_view getProtocolVersion() const noexcept { return protocolVersion; }
         std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
         std::weak_ptr<tcp::socket> getSocket() const { return httpClient.expired() ? std::weak_ptr<tcp::socket>() : std::weak_ptr<tcp::socket>(httpClient.lock()->socket); }
 
@@ -44,7 +48,9 @@ public:
     private:
         std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
         std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
+        std::experimental::string_view method;
         std::experimental::string_view uri;
+        std::experimental::string_view protocolVersion;
         std::experimental::string_view headerFields;
     };
 
@@ -111,7 +117,7 @@ private:
             client->startCancelTimer();
 
             if ((maxHttpClients == 0) || (httpClients.size() <= maxHttpClients)) {
-                client->validateHttpMethod();
+                client->validateHttpHeader();
             } else {
                 if (verboseLogging) {
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
@@ -133,7 +139,8 @@ private:
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : server(server), socket(socket), buffer(std::make_shared<boost::asio::basic_streambuf<Allocator>>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()) {
+                  timeoutTimer(socket->get_io_service()), matchHttpHeader((server.maxHttpHeaderSize)) {
+            buffer->prepare(server.maxHttpHeaderSize);
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
             }
@@ -190,106 +197,10 @@ private:
                 });
         }
 
-        void validateHttpMethod() {
-            static constexpr std::experimental::string_view REQUEST_METHOD = "GET "sv;
-
+        void validateHttpHeader() {
             boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize(REQUEST_METHOD, REQUEST_METHOD.length())),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
-                    if (reference.expired()) {
-                        return;
-                    }
-
-                    try {
-                        if (e == boost::system::errc::operation_canceled) {
-                            throw ServerError(e.message(),
-                                "HTTP/1.1 408 Request Timeout\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Connection: close\r\n"
-                                "\r\n");
-                        } else if (e) {
-                            throw ServerError(e.message(), "");
-                        }
-
-                        std::experimental::string_view method(boost::asio::buffer_cast<const char*>(buffer->data()), size);
-                        if (REQUEST_METHOD != method) {
-                            throw ServerError("request method not supported",
-                                "HTTP/1.1 501 Not Implemented\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Connection: close\r\n"
-                                "\r\n");
-                        }
-
-                        buffer->consume(size);
-                        bytesRead += size;
-                        readHttpRequestUri();
-                    } catch (const ServerError &e) {
-                        if (server.verboseLogging) {
-                            std::cerr << "HTTP client error: " << e.what() << std::endl;
-                        }
-                        sendFinalHttpResponse(e.http_response());
-                    }
-                });
-        }
-
-        void readHttpRequestUri() {
-            static constexpr std::experimental::string_view HTTP_VERSION_ENDING = " HTTP/1.1\r\n"sv;
-
-            boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize("\r\n", server.maxHttpHeaderSize - bytesRead - "\r\n"sv.length())),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) {
-                    if (reference.expired()) {
-                        return;
-                    }
-
-                    try {
-                        if (e == boost::system::errc::operation_canceled) {
-                            throw ServerError(e.message(),
-                                "HTTP/1.1 408 Request Timeout\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Connection: close\r\n"
-                                "\r\n");
-                        } else if (e) {
-                            throw ServerError(e.message(), "");
-                        } else if (size <= HTTP_VERSION_ENDING.length()) {
-                            throw ServerError("request not supported",
-                                "HTTP/1.1 400 Bad Request\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Connection: close\r\n"
-                                "\r\n");
-                        }
-
-                        std::experimental::string_view ending = {boost::asio::buffer_cast<const char*>(buffer->data()) + size - HTTP_VERSION_ENDING.length(), HTTP_VERSION_ENDING.length()};
-                        if (HTTP_VERSION_ENDING != ending) {
-                            throw ServerError("request not supported",
-                                "HTTP/1.1 505 HTTP Version Not Supported\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Connection: close\r\n"
-                                "\r\n"
-                                "Only HTTP/1.1 is supported");
-                        }
-
-                        uri = {boost::asio::buffer_cast<const char*>(buffer->data()), size - HTTP_VERSION_ENDING.length()};
-
-                        buffer->consume(size - 2); // Do not consume CRLF
-                        bytesRead += (size - 2);
-                        readRestOfHttpHeader();
-                    } catch (const ServerError &e) {
-                        if (server.verboseLogging) {
-                            std::cerr << "HTTP client error: " << e.what() << std::endl;
-                        }
-                        sendFinalHttpResponse(e.http_response());
-                    }
-                });
-        }
-
-        void readRestOfHttpHeader() {
-            constexpr std::experimental::string_view HEADER_END = "\r\n\r\n"sv;
-
-            boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(MatchStringOrSize(HEADER_END, server.maxHttpHeaderSize - bytesRead)),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t size) mutable {
+                UntilFunction(matchHttpHeader),
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t /*size*/) {
                     if (reference.expired()) {
                         return;
                     }
@@ -312,7 +223,7 @@ private:
                         return;
                     }
 
-                    if ((size < HEADER_END.length()) || (std::experimental::string_view(boost::asio::buffer_cast<const char*>(buffer->data()) + size - HEADER_END.length(), HEADER_END.length()) != HEADER_END)) {
+                    if (!matchHttpHeader.success) {
                         if (server.verboseLogging) {
                             std::cerr << "HTTP client error: request header size is too large" << std::endl;
                         }
@@ -328,7 +239,10 @@ private:
                     }
 
                     if (server.requestHandler) {
-                        headerFields = {boost::asio::buffer_cast<const char*>(buffer->data()) + 2, size - HEADER_END.length()};
+                        httpMethod = {matchHttpHeader.methodBegin, static_cast<size_t>(matchHttpHeader.methodEnd - matchHttpHeader.methodBegin)};
+                        httpUri = {matchHttpHeader.uriBegin, static_cast<size_t>(matchHttpHeader.uriEnd - matchHttpHeader.uriBegin)};
+                        protocolVersion = {matchHttpHeader.protocolVersionBegin, static_cast<size_t>(matchHttpHeader.protocolVersionEnd - matchHttpHeader.protocolVersionBegin)};
+                        httpHeaderFields = {matchHttpHeader.headerFieldsBegin, static_cast<size_t>(matchHttpHeader.headerFieldsEnd - matchHttpHeader.headerFieldsBegin)};
                         server.requestHandler(std::make_shared<HttpRequest>(this->shared_from_this()));
                     } else {
                         removeFromServer();
@@ -336,48 +250,175 @@ private:
                 });
         }
 
+        class MatchHttpHeader {
+        public:
+            explicit MatchHttpHeader(size_t maxHeaderSize) noexcept
+                    : maxHeaderSize(maxHeaderSize),
+                      currentMatcher(std::bind(&MatchHttpHeader::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
+            }
+
+            std::pair<UntilIterator, bool> operator()(UntilIterator begin, UntilIterator end) noexcept {
+                return currentMatcher(begin, end);
+            }
+
+            std::pair<UntilIterator, bool> methodMatcher(UntilIterator begin, UntilIterator end) noexcept {
+                if (methodBegin == nullptr) {
+                    methodBegin = &*begin;
+                }
+
+                UntilIterator i = begin;
+
+                while (i != end) {
+                    if (++bytesRead == maxHeaderSize) {
+                        return std::make_pair(i, true);
+                    }
+
+                    char c = *i;
+
+                    // TODO: validate METHOD chars
+
+                    if (c == ' ') {
+                        methodEnd =  &*i;
+                        currentMatcher = std::bind(&MatchHttpHeader::uriMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                        i++;
+                        return uriMatcher(i, end);
+                    }
+
+                    i++;
+                }
+
+                return std::make_pair(i, false);
+            }
+
+            std::pair<UntilIterator, bool> uriMatcher(UntilIterator begin, UntilIterator end) noexcept {
+                if (uriBegin == nullptr) {
+                    uriBegin = &*begin;
+                }
+
+                UntilIterator i = begin;
+
+                while (i != end) {
+                    if (++bytesRead == maxHeaderSize) {
+                        return std::make_pair(i, true);
+                    }
+
+                    char c = *i;
+
+                    // TODO: validate URI chars
+
+                    if (c == ' ') {
+                        uriEnd =  &*i;
+                        currentMatcher = std::bind(&MatchHttpHeader::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                        i++;
+                        bytesRead++;
+                        return protocolVersionMatcher(i, end);
+                    }
+
+                    i++;
+                }
+
+                return std::make_pair(i, false);
+            }
+
+            std::pair<UntilIterator, bool> protocolVersionMatcher(UntilIterator begin, UntilIterator end) noexcept {
+                if (protocolVersionBegin == nullptr) {
+                    protocolVersionBegin = &*begin;
+                }
+
+                UntilIterator i = begin;
+
+                while (i != end) {
+                    if (++bytesRead == maxHeaderSize) {
+                        return std::make_pair(i, true);
+                    }
+
+                    char c = *i;
+
+                    // TODO: validate HTTP version chars
+
+                    if ((previousChar == '\r') && (c == '\n')) {
+                        protocolVersionEnd =  &*(i-1);
+                        currentMatcher = std::bind(&MatchHttpHeader::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                        previousChar ='\n';
+                        i++;
+                        bytesRead++;
+                        return headerFieldsMatcher(i, end);
+                    }
+
+                    previousChar = c;
+                    i++;
+                }
+
+                return std::make_pair(i, false);
+            }
+
+            std::pair<UntilIterator, bool> headerFieldsMatcher(UntilIterator begin, UntilIterator end) noexcept {
+                if (headerFieldsBegin == nullptr) {
+                    headerFieldsBegin = &*begin;
+                }
+
+                UntilIterator i = begin;
+
+                while (i != end) {
+                    char c = *i;
+
+                    // TODO: split and validate header fields
+
+                    if ((previousChar == '\r') && (c == '\n')) {
+                        if (newLine) {
+                            headerFieldsEnd =  &*(i-1);
+                            success = true;
+                            return std::make_pair(i, true);
+                        } else {
+                            newLine = true;
+                        }
+                    } else if ((newLine != true) || (previousChar != '\n') || (c != '\r')) {
+                        newLine = false;
+                    }
+
+                    previousChar = c;
+                    i++;
+
+                    if (++bytesRead == maxHeaderSize) {
+                        return std::make_pair(i, true);
+                    }
+                }
+
+                return std::make_pair(i, false);
+            }
+
+            size_t maxHeaderSize;
+            size_t bytesRead = 0;
+            std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> currentMatcher;
+
+            const char* methodBegin = nullptr;
+            const char* methodEnd = nullptr;
+
+            const char* uriBegin = nullptr;
+            const char* uriEnd = nullptr;
+
+            const char* protocolVersionBegin = nullptr;
+            const char* protocolVersionEnd = nullptr;
+
+            const char* headerFieldsBegin = nullptr;
+            const char* headerFieldsEnd = nullptr;
+
+            char previousChar = 0;
+            bool newLine = true;
+            bool success = false;
+        };
+
         SimpleHttpServer &server;
 
         std::shared_ptr<tcp::socket> socket;
         std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
-        size_t bytesRead = 0;
         boost::asio::system_timer timeoutTimer;
 
-        std::experimental::string_view uri;
-        std::experimental::string_view headerFields;
-    };
-
-    class MatchStringOrSize {
-    public:
-        explicit MatchStringOrSize(std::experimental::string_view string, size_t sizeLimit) noexcept : string(string), sizeLimit(sizeLimit) {}
-
-        std::pair<UntilIterator, bool> operator()(UntilIterator begin, UntilIterator end) noexcept {
-            UntilIterator i = begin;
-
-            while (i != end) {
-                char c = *i++;
-
-                if (string[stringIndex] == c) {
-                    if (++stringIndex == string.length()) {
-                        return std::make_pair(i, true);
-                    }
-                } else {
-                    stringIndex = 0;
-                }
-
-                if (++bytesRead == sizeLimit) {
-                    return std::make_pair(i, true);
-                }
-            }
-
-            return std::make_pair(i, false);
-        }
-
-    private:
-        std::experimental::string_view string;
-        size_t stringIndex = 0;
-        size_t sizeLimit;
-        size_t bytesRead = 0;
+        MatchHttpHeader matchHttpHeader;
+        std::experimental::string_view httpMethod;
+        std::experimental::string_view httpUri;
+        std::experimental::string_view protocolVersion;
+        std::experimental::string_view httpHeaderFields;
     };
 
     tcp::acceptor acceptor;
