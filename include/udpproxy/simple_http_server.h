@@ -96,7 +96,7 @@ private:
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
 
-        acceptor.async_accept(*socket, [this, socket] (const boost::system::error_code &e) mutable {
+        acceptor.async_accept(*socket, [this, socket = socket] (const boost::system::error_code &e) mutable {
             if (e) {
                 if (e == boost::system::errc::operation_canceled) {
                     return;
@@ -150,14 +150,14 @@ private:
                 return;
             }
 
-            timeoutTimer.expires_from_now();
+            timeoutTimer.expires_from_now(server.httpConnectionTimeout);
             timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
                 if (reference.expired()) {
                     return;
                 }
 
                 if (e != boost::system::errc::operation_canceled) {
-                    socket->cancel();
+                    removeFromServer();
                 }
             });
         }
