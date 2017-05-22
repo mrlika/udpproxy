@@ -13,6 +13,9 @@ public:
               currentMatcher(std::bind(&HttpHeaderParser::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
     }
 
+    HttpHeaderParser(const HttpHeaderParser&) = delete;
+    HttpHeaderParser(HttpHeaderParser&&) = delete;
+
     std::pair<Iterator, bool> operator()(Iterator begin, Iterator end) noexcept {
         return currentMatcher(begin, end);
     }
@@ -32,7 +35,7 @@ private:
         Iterator i = begin;
 
         while (i != end) {
-            if (++bytesRead == maxHeaderSize) {
+            if (bytesRead++ == maxHeaderSize) {
                 return std::make_pair(i, true);
             }
 
@@ -61,7 +64,7 @@ private:
         Iterator i = begin;
 
         while (i != end) {
-            if (++bytesRead == maxHeaderSize) {
+            if (bytesRead++ == maxHeaderSize) {
                 return std::make_pair(i, true);
             }
 
@@ -73,7 +76,6 @@ private:
                 uriEnd =  &*i;
                 currentMatcher = std::bind(&HttpHeaderParser::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
                 i++;
-                bytesRead++;
                 return protocolVersionMatcher(i, end);
             }
 
@@ -91,7 +93,7 @@ private:
         Iterator i = begin;
 
         while (i != end) {
-            if (++bytesRead == maxHeaderSize) {
+            if (bytesRead++ == maxHeaderSize) {
                 return std::make_pair(i, true);
             }
 
@@ -104,7 +106,6 @@ private:
                 currentMatcher = std::bind(&HttpHeaderParser::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
                 previousChar ='\n';
                 i++;
-                bytesRead++;
                 return headerFieldsMatcher(i, end);
             }
 
@@ -123,6 +124,10 @@ private:
         Iterator i = begin;
 
         while (i != end) {
+            if (bytesRead++ == maxHeaderSize) {
+                return std::make_pair(i, true);
+            }
+
             char c = *i;
 
             // TODO: split and validate header fields
@@ -131,6 +136,7 @@ private:
                 if (newLine) {
                     headerFieldsEnd =  &*(i-1);
                     success = true;
+                    i++;
                     return std::make_pair(i, true);
                 } else {
                     newLine = true;
@@ -141,10 +147,6 @@ private:
 
             previousChar = c;
             i++;
-
-            if (++bytesRead == maxHeaderSize) {
-                return std::make_pair(i, true);
-            }
         }
 
         return std::make_pair(i, false);
