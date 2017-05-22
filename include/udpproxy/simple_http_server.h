@@ -118,8 +118,7 @@ private:
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
                 : server(server), socket(socket), buffer(std::make_shared<boost::asio::basic_streambuf<Allocator>>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()), httpHeaderParser((server.maxHttpHeaderSize)) {
-            buffer->prepare(server.maxHttpHeaderSize);
+                  timeoutTimer(socket->get_io_service()), httpHeaderParser(server.maxHttpHeaderSize) {
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
             }
@@ -176,10 +175,26 @@ private:
                 });
         }
 
-        void validateHttpHeader() {
-            boost::asio::async_read_until(*socket, *buffer,
-                UntilFunction(httpHeaderParser),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), bufferCapture = buffer] (const boost::system::error_code &e, size_t /*size*/) {
+        void validateHttpHeader(size_t position = 0, size_t bytesRead = 0) {
+            auto bytesToRead = server.maxHttpHeaderSize - bytesRead;
+            assert(bytesToRead >= 0);
+            if (bytesToRead == 0) {
+                if (server.verboseLogging) {
+                    std::cerr << "HTTP client error: request header size is too large" << std::endl;
+                }
+
+                sendFinalHttpResponse(
+                    "431 Request Header Fields Too Large\r\n"
+                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "Total size of HTTP request header is too large");
+                return;
+            }
+
+            socket->async_read_some(buffer->prepare(bytesToRead),
+                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), buffer = buffer, position, bytesRead] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
                     }
@@ -202,18 +217,33 @@ private:
                         return;
                     }
 
+                    buffer->commit(size);
+
+                    typedef typename boost::asio::basic_streambuf<Allocator>::const_buffers_type const_buffers_type;
+                    typedef boost::asio::buffers_iterator<const_buffers_type> iterator;
+
+                    const_buffers_type constBuffer = buffer->data();
+                    iterator begin = iterator::begin(constBuffer) + position;
+                    iterator end = iterator::end(constBuffer);
+
+                    auto result = httpHeaderParser(begin, end);
+                    auto bytesProcessed = result.first - begin;
+
+                    if (!result.second) {
+                        validateHttpHeader(position + bytesProcessed, bytesRead + size);
+                        return;
+                    }
+
                     if (!httpHeaderParser.isSucceeded()) {
                         if (server.verboseLogging) {
-                            std::cerr << "HTTP client error: request header size is too large" << std::endl;
+                            std::cerr << "HTTP client error: bad  HTTP request header" << std::endl;
                         }
 
                         sendFinalHttpResponse(
-                            "431 Request Header Fields Too Large\r\n"
+                            "400 Bad Request\r\n"
                             "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                            "Content-Type: text/plain\r\n"
                             "Connection: close\r\n"
-                            "\r\n"
-                            "Total size of HTTP request header is too large");
+                            "\r\n");
                         return;
                     }
 
