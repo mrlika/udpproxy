@@ -62,23 +62,23 @@ public:
     void setMulticastInterfaceAddress(boost::asio::ip::address value) noexcept { multicastInterfaceAddress = value; }
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return multicastInterfaceAddress; }
 
-    void setNewUdpInputHandler(NewUdpInputHandler handler) { newUdpInputHandler = handler; }
-    void setRemoveUdpInputHandler(RemoveUdpInputHandler handler) { removeUdpInputHandler = handler; }
-    void setStartUdpInputHandler(StartUdpInputHandler handler) { startUdpInputHandler = handler; }
-    void setNewClientHandler(NewClientHandler handler) { newClientHandler = handler; }
-    void setRemoveClientHandler(RemoveClientHandler handler) { removeClientHandler = handler; }
-    void setStartClientHandler(StartClientHandler handler) { startClientHandler = handler; }
-    void setReadUdpInputHandler(ReadUdpInputHandler handler) { readUdpInputHandler = handler; }
-    void setWriteClientHandler(WriteClientHandler handler) { writeClientHandler = handler; }
+    void setNewUdpInputHandler(NewUdpInputHandler handler) noexcept { newUdpInputHandler = handler; }
+    void setRemoveUdpInputHandler(RemoveUdpInputHandler handler) noexcept { removeUdpInputHandler = handler; }
+    void setStartUdpInputHandler(StartUdpInputHandler handler) noexcept { startUdpInputHandler = handler; }
+    void setNewClientHandler(NewClientHandler handler) noexcept { newClientHandler = handler; }
+    void setRemoveClientHandler(RemoveClientHandler handler) noexcept { removeClientHandler = handler; }
+    void setStartClientHandler(StartClientHandler handler) noexcept { startClientHandler = handler; }
+    void setReadUdpInputHandler(ReadUdpInputHandler handler) noexcept { readUdpInputHandler = handler; }
+    void setWriteClientHandler(WriteClientHandler handler) noexcept { writeClientHandler = handler; }
 
-    NewUdpInputHandler getNewUdpInputHandler() { return newUdpInputHandler; }
-    RemoveUdpInputHandler getRemoveUdpInputHandler() { return removeUdpInputHandler; }
-    StartUdpInputHandler getStartUdpInputHandler() { return startUdpInputHandler; }
-    NewClientHandler getNewClientHandler() { return newClientHandler; }
-    RemoveClientHandler getRemoveClientHandler() { return removeClientHandler; }
-    StartClientHandler getStartClientHandler() { return startClientHandler; }
-    ReadUdpInputHandler getReadUdpInputHandler() { return readUdpInputHandler; }
-    WriteClientHandler getWriteClientHandler() { return writeClientHandler; }
+    NewUdpInputHandler getNewUdpInputHandler() const noexcept { return newUdpInputHandler; }
+    RemoveUdpInputHandler getRemoveUdpInputHandler() const noexcept { return removeUdpInputHandler; }
+    StartUdpInputHandler getStartUdpInputHandler() const noexcept { return startUdpInputHandler; }
+    NewClientHandler getNewClientHandler() const noexcept { return newClientHandler; }
+    RemoveClientHandler getRemoveClientHandler() const noexcept { return removeClientHandler; }
+    StartClientHandler getStartClientHandler() const noexcept { return startClientHandler; }
+    ReadUdpInputHandler getReadUdpInputHandler() const noexcept { return readUdpInputHandler; }
+    WriteClientHandler getWriteClientHandler() const noexcept { return writeClientHandler; }
 
     void detectDisconnectedClientsAsync() {
         // Slowly read clients' sockets to detect disconnected ones
@@ -126,7 +126,7 @@ public:
         }
     }
 
-    void removeClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
+    void removeClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) noexcept {
         auto udpInputIterator = udpInputs.find(getEndpointId(udpEndpoint));
         if (udpInputIterator == udpInputs.end()) {
             return;
@@ -187,7 +187,7 @@ private:
             }
         }
 
-        ~UdpInput() {
+        ~UdpInput() noexcept {
             if (server.verboseLogging) {
                 std::cerr << "remove UDP input: " << udpEndpoint << std::endl;
             }

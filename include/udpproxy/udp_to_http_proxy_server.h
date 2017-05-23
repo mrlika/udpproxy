@@ -22,29 +22,29 @@ public:
         httpServer.runAsync();
     }
 
-    void setMaxHttpHeaderSize(size_t value) { httpServer.setMaxHttpHeaderSize(value); }
+    void setMaxHttpHeaderSize(size_t value) noexcept { httpServer.setMaxHttpHeaderSize(value); }
     size_t getMaxHttpHeaderSize() const noexcept { return httpServer.getMaxHttpHeaderSize(); }
-    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) { httpServer.setHttpConnectionTimeout(value); }
+    void setHttpConnectionTimeout(boost::asio::system_timer::duration value) noexcept { httpServer.setHttpConnectionTimeout(value); }
     boost::asio::system_timer::duration getHttpConnectionTimeout() const noexcept { return httpServer.getHttpConnectionTimeout(); }
-    void setMaxUdpDataSize(size_t value) { udpServer.setMaxUdpDataSize(value); }
+    void setMaxUdpDataSize(size_t value) noexcept { udpServer.setMaxUdpDataSize(value); }
     size_t getMaxUdpDataSize() const noexcept { return udpServer.getMaxUdpDataSize(); }
-    void setMaxOutputQueueLength(size_t value) { udpServer.setMaxOutputQueueLength(value); }
+    void setMaxOutputQueueLength(size_t value) noexcept { udpServer.setMaxOutputQueueLength(value); }
     size_t getMaxOutputQueueLength() const noexcept { return udpServer.getMaxOutputQueueLength(); }
-    void setMaxHttpClients(size_t value) { httpServer.setMaxHttpClients(value); }
+    void setMaxHttpClients(size_t value) noexcept { httpServer.setMaxHttpClients(value); }
     size_t getMaxHttpClients() const noexcept { return httpServer.getMaxHttpClients(); }
-    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) { udpServer.setOutputQueueOverflowAlgorithm(value); }
+    void setOutputQueueOverflowAlgorithm(OutputQueueOverflowAlgorithm value) noexcept { udpServer.setOutputQueueOverflowAlgorithm(value); }
     OutputQueueOverflowAlgorithm getOutputQueueOverflowAlgorithm() const noexcept { return udpServer.getOutputQueueOverflowAlgorithm(); };
-    void setVerboseLogging(bool value) {
+    void setVerboseLogging(bool value) noexcept {
         verboseLogging = value;
         udpServer.setVerboseLogging(value);
         httpServer.setVerboseLogging(value);
     }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
-    void setEnableStatus(bool value) { enableStatus = value; }
+    void setEnableStatus(bool value) noexcept { enableStatus = value; }
     bool getEnableStatus() const noexcept { return enableStatus; }
-    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) { udpServer.setRenewMulticastSubscriptionInterval(value); }
+    void setRenewMulticastSubscriptionInterval(boost::asio::system_timer::duration value) noexcept { udpServer.setRenewMulticastSubscriptionInterval(value); }
     boost::asio::system_timer::duration getRenewMulticastSubscriptionInterval() const noexcept { return udpServer.getRenewMulticastSubscriptionInterval(); }
-    void setMulticastInterfaceAddress(boost::asio::ip::address value) { udpServer.setMulticastInterfaceAddress(value); }
+    void setMulticastInterfaceAddress(boost::asio::ip::address value) noexcept { udpServer.setMulticastInterfaceAddress(value); }
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:

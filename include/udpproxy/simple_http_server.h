@@ -71,8 +71,8 @@ public:
     size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
     void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
-    void setRequestHandler(RequestHandler handler) { requestHandler = handler; }
-    RequestHandler getRequestHandler() { return requestHandler; }
+    void setRequestHandler(RequestHandler handler) noexcept { requestHandler = handler; }
+    RequestHandler getRequestHandler() const noexcept { return requestHandler; }
 
 private:
     void startAccept() {
@@ -144,7 +144,7 @@ private:
             });
         }
 
-        void removeFromServer() {
+        void removeFromServer() noexcept {
             auto it = find_if(server.httpClients.begin(), server.httpClients.end(), [this] (const std::shared_ptr<HttpClient>& client) { return client.get() == this; });
             assert(it != server.httpClients.end());
             server.httpClients.erase(it);
