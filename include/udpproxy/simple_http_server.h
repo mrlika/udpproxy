@@ -48,7 +48,7 @@ public:
 
     private:
         std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
-        std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
+        std::shared_ptr<std::vector<char, typename SimpleHttpServer::HttpClient::BufferAllocator>> buffer;
         std::experimental::string_view method;
         std::experimental::string_view uri;
         std::experimental::string_view protocolVersion;
@@ -117,8 +117,8 @@ private:
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
-                : server(server), socket(socket), buffer(std::make_shared<boost::asio::basic_streambuf<Allocator>>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()), httpHeaderParser(server.maxHttpHeaderSize) {
+                : server(server), socket(socket), buffer(std::make_shared<typename decltype(buffer)::element_type>(server.maxHttpHeaderSize)),
+                  timeoutTimer(socket->get_io_service()), httpHeaderParser{server.maxHttpHeaderSize} {
             if (server.verboseLogging) {
                 std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
             }
@@ -193,7 +193,7 @@ private:
                 return;
             }
 
-            socket->async_read_some(buffer->prepare(bytesToRead),
+            socket->async_read_some(boost::asio::buffer(boost::asio::mutable_buffer(buffer->data(), buffer->size())),
                 [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), buffer = buffer, position, bytesRead] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
@@ -217,20 +217,15 @@ private:
                         return;
                     }
 
-                    buffer->commit(size);
+                    const auto newBytesRead = bytesRead + size;
 
-                    typedef typename boost::asio::basic_streambuf<Allocator>::const_buffers_type const_buffers_type;
-                    typedef boost::asio::buffers_iterator<const_buffers_type> iterator;
-
-                    const_buffers_type constBuffer = buffer->data();
-                    iterator begin = iterator::begin(constBuffer) + position;
-                    iterator end = iterator::end(constBuffer);
+                    auto begin = buffer->cbegin() + position;
+                    auto end = buffer->cbegin() + newBytesRead;
 
                     auto result = httpHeaderParser(begin, end);
-                    auto bytesProcessed = result.first - begin;
 
                     if (!result.second) {
-                        validateHttpHeader(position + bytesProcessed, bytesRead + size);
+                        validateHttpHeader(position + result.first - begin, newBytesRead);
                         return;
                     }
 
@@ -259,13 +254,15 @@ private:
                 });
         }
 
+        typedef typename std::allocator_traits<Allocator>::template rebind_alloc<std::vector<char>> BufferAllocator;
+
         SimpleHttpServer &server;
 
         std::shared_ptr<tcp::socket> socket;
-        std::shared_ptr<boost::asio::basic_streambuf<Allocator>> buffer;
+        std::shared_ptr<std::vector<char, BufferAllocator>> buffer;
         boost::asio::system_timer timeoutTimer;
 
-        HttpHeaderParser<UntilIterator> httpHeaderParser;
+        HttpHeaderParser<typename decltype(buffer)::element_type::const_iterator> httpHeaderParser;
         std::experimental::string_view httpMethod;
         std::experimental::string_view httpUri;
         std::experimental::string_view protocolVersion;
