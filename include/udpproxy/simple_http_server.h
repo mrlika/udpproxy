@@ -173,7 +173,7 @@ private:
         }
 
         void validateHttpHeader(size_t position = 0, size_t bytesRead = 0) {
-            auto bytesToRead = server.maxHttpHeaderSize - bytesRead;
+            auto bytesToRead = buffer->size() - bytesRead;
             assert(bytesToRead >= 0);
             if (bytesToRead == 0) {
                 if (server.verboseLogging) {
@@ -190,7 +190,7 @@ private:
                 return;
             }
 
-            socket->async_read_some(boost::asio::buffer(buffer->data(), buffer->size()),
+            socket->async_read_some(boost::asio::buffer(buffer->data() + bytesRead, buffer->size() - bytesRead),
                 [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), buffer = buffer, position, bytesRead] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
