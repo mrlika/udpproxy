@@ -75,9 +75,6 @@ public:
     RequestHandler getRequestHandler() { return requestHandler; }
 
 private:
-    typedef boost::asio::buffers_iterator<boost::asio::streambuf::const_buffers_type> UntilIterator;
-    typedef std::function<std::pair<UntilIterator, bool>(UntilIterator begin, UntilIterator end) noexcept> UntilFunction;
-
     void startAccept() {
         auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
 
@@ -193,7 +190,7 @@ private:
                 return;
             }
 
-            socket->async_read_some(boost::asio::buffer(boost::asio::mutable_buffer(buffer->data(), buffer->size())),
+            socket->async_read_some(boost::asio::buffer(buffer->data(), buffer->size()),
                 [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), buffer = buffer, position, bytesRead] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
