@@ -3,8 +3,6 @@
 #include "simple_http_server.h"
 #include "udp_to_tcp_proxy_server.h"
 
-#include <regex>
-
 namespace UdpProxy {
 
 template <typename Allocator, bool SendHttpResponses>
@@ -168,7 +166,7 @@ private:
         }
 
         if (request->getMethod() != "GET") {
-            auto response =
+            static constexpr auto response =
                 "HTTP/1.1 501 Not Implemented\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Connection: close\r\n"
@@ -178,7 +176,7 @@ private:
                 [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
             return;
         } else if (request->getProtocolVersion() != "HTTP/1.1") {
-            auto response =
+            static constexpr auto response =
                 "HTTP/1.1 505 HTTP Version Not Supported\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: text/plain\r\n"
@@ -200,12 +198,34 @@ private:
             return;
         }
 
-        // TODO: replace regex with parsing algorithm for better performance and to avoid memory allocations
-        static const std::regex uriRegex("/udp/(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):(\\d{1,5})(?:\\?.*)?", std::regex_constants::optimize);
-        std::cmatch match;
-        std::regex_match(uri.begin(), uri.end(), match, uriRegex);
+        if (uri.length() < "/udp/1.2.3.4:5"sv.length()) {
+            writeNotFoundResponse(request);
+            return;
+        }
 
-        if (match.empty()) {
+        static constexpr auto UDP_URI_PREFIX = "/udp/"sv;
+
+        if (uri.substr(0, UDP_URI_PREFIX.length()) != UDP_URI_PREFIX) {
+            writeNotFoundResponse(request);
+            return;
+        }
+
+        size_t portBegin = uri.find(':', UDP_URI_PREFIX.length());
+        if ((portBegin == std::experimental::string_view::npos)
+                || (portBegin > "/udp/123.123.123.123"sv.length())
+                || (portBegin < "/udp/1.2.3.4"sv.length())) {
+            writeNotFoundResponse(request);
+            return;
+        }
+
+        portBegin += 1;
+
+        size_t portEnd = uri.find('?', UDP_URI_PREFIX.length());
+        if (portEnd == std::experimental::string_view::npos) {
+            portEnd = uri.length();
+        }
+
+        if ((portEnd - portBegin > 5) || (portEnd - portBegin < 1)) {
             writeNotFoundResponse(request);
             return;
         }
@@ -214,11 +234,11 @@ private:
         unsigned long port;
 
         try {
-            // TODO: use std::from_chars and match[2].first/second to avoid std::string creation and memory copying
-            port = std::stoul(match[2]);
-            // TODO: use string_view created from match[2].first/second to avoid std::string creation and memory copying
-            // possible only when from_string supports string_view
-            address = boost::asio::ip::address::from_string(match[1]);
+            // TODO: use std::from_chars to avoid std::string creation and memory copying
+            port = std::stoul(std::string(uri.cbegin() + portBegin, portEnd - portBegin));
+            // TODO: avoid std::string creation and memory copying
+            // possible only when ip::address::from_string supports string_view
+            address = boost::asio::ip::address::from_string(std::string(uri.cbegin() + UDP_URI_PREFIX.length(), portBegin - 1 - UDP_URI_PREFIX.length()));
         } catch (...) {
             writeNotFoundResponse(request);
             return;
