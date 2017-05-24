@@ -11,6 +11,7 @@ public:
     BasicUdpToHttpProxyServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
             : udpServer(ioService), httpServer(ioService, endpoint) {
         httpServer.setRequestHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequest, this, std::placeholders::_1));
+        httpServer.setRequestErrorHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequestError, this, std::placeholders::_1, std::placeholders::_2));
         udpServer.setStartUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::startUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2));
         udpServer.setReadUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::readUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
         udpServer.setStartClientHandler(std::bind(&BasicUdpToHttpProxyServer::startClientHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4));
@@ -56,13 +57,13 @@ private:
     };
 
     struct ClientCustomData {
-        std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest> request;
+        std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request;
         std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
         size_t bytesOut = 0;
         double outBitrateKbit = 0;
     };
 
-    void writeJsonStatus(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
+    void writeJsonStatus(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request) {
         auto socket = request->getSocket().lock();
 
         if (verboseLogging) {
@@ -140,24 +141,72 @@ private:
             });
     }
 
-    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest>& request) {
+    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request) {
         if (verboseLogging) {
             std::cerr << "wrong URI: " << request->getUri() << std::endl;
         }
 
-        static constexpr auto response =
+        writeResponse(request,
             "HTTP/1.1 404 Not Found\r\n"
             "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
             "Content-Type: text/plain\r\n"
             "Connection: close\r\n"
             "\r\n"
-            "404 Not Found"sv;
-
-        boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response.cbegin(), response.length()),
-            [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+            "404 Not Found"sv);
     }
 
-    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator, SendHttpResponses>::HttpRequest> request) {
+    void writeResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request, std::experimental::string_view response) {
+        if (SendHttpResponses) {
+            boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response.cbegin(), response.length()),
+                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+        }
+    }
+
+    void handleRequestError(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request, typename SimpleHttpServer<Allocator>::RequestError error) {
+        static std::experimental::string_view response;
+
+        switch (error) {
+        case SimpleHttpServer<Allocator>::RequestError::ClientsLimitReached:
+            response =
+                "HTTP/1.1 429 Too Many Requests\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Maximum number of clients reached"sv;
+            break;
+
+        case SimpleHttpServer<Allocator>::RequestError::HttpHeaderTooLarge:
+            response =
+                "HTTP/1.1 431 Request Header Fields Too Large\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Total size of HTTP request header is too large"sv;
+            break;
+
+        case SimpleHttpServer<Allocator>::RequestError::RequestTimeout:
+            response =
+                "HTTP/1.1 408 Request Timeout\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Connection: close\r\n"
+                "\r\n"sv;
+            break;
+
+        case SimpleHttpServer<Allocator>::RequestError::BadHttpRequest:
+            response =
+                "HTTP/1.1 400 Bad Request\r\n"
+                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
+                "Connection: close\r\n"
+                "\r\n"sv;
+            break;
+        }
+
+        writeResponse(request, response);
+    }
+
+    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request) {
         auto uri = request->getUri();
         auto socket = request->getSocket().lock();
 
@@ -166,26 +215,20 @@ private:
         }
 
         if (request->getMethod() != "GET") {
-            static constexpr auto response =
+            writeResponse(request,
                 "HTTP/1.1 501 Not Implemented\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Connection: close\r\n"
-                "\r\n"sv;
-
-            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+                "\r\n"sv);
             return;
         } else if (request->getProtocolVersion() != "HTTP/1.1") {
-            static constexpr auto response =
+            writeResponse(request,
                 "HTTP/1.1 505 HTTP Version Not Supported\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: text/plain\r\n"
                 "Connection: close\r\n"
                 "\r\n"
-                "Only HTTP/1.1 is supported"sv;
-
-            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+                "Only HTTP/1.1 is supported"sv);
             return;
         }
 
@@ -255,15 +298,13 @@ private:
             udpServer.addClient(socket, udpEndpoint, ClientCustomData{request});
         } catch (const boost::system::system_error &e) {
             std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
-            static constexpr auto response =
+            writeResponse(request,
                 "HTTP/1.1 500 Internal Server Error\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
                 "Content-Type: text/plain\r\n"
                 "Connection: close\r\n"
                 "\r\n"
-                "UDP socket error"sv;
-            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
+                "UDP socket error"sv);
         }
 
         request->cancelTimeout();
@@ -333,7 +374,7 @@ private:
     }
 
     UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData> udpServer;
-    SimpleHttpServer<Allocator, SendHttpResponses> httpServer;
+    SimpleHttpServer<Allocator> httpServer;
 
     bool verboseLogging = true;
     bool enableStatus = false;

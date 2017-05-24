@@ -8,16 +8,21 @@
 #include <iostream>
 #include <list>
 
-#include "version.h"
-
 namespace UdpProxy {
 
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 
-template <typename Allocator, bool SendHttpResponses>
+template <typename Allocator>
 class SimpleHttpServer {
 public:
+    enum class RequestError {
+        ClientsLimitReached,
+        HttpHeaderTooLarge,
+        BadHttpRequest,
+        RequestTimeout
+    };
+
     class HttpRequest {
     public:
         explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept
@@ -56,6 +61,7 @@ public:
     };
 
     typedef std::function<void(std::shared_ptr<HttpRequest>) noexcept> RequestHandler;
+    typedef std::function<void(std::shared_ptr<HttpRequest>, RequestError) noexcept> RequestErrorHandler;
 
     SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) : acceptor(ioService, endpoint) {}
 
@@ -71,8 +77,12 @@ public:
     size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
     void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
+
     void setRequestHandler(RequestHandler handler) noexcept { requestHandler = handler; }
     RequestHandler getRequestHandler() const noexcept { return requestHandler; }
+
+    void setRequestErrorHandler(RequestErrorHandler handler) noexcept { requestErrorHandler = handler; }
+    RequestErrorHandler getRequestErrorHandler() const noexcept { return requestErrorHandler; }
 
 private:
     void startAccept() {
@@ -99,13 +109,11 @@ private:
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
                 }
 
-                client->sendFinalHttpResponse(
-                    "HTTP/1.1 429 Too Many Requests\r\n"
-                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                    "Maximum number of clients reached");
+                if (requestErrorHandler) {
+                    requestErrorHandler(std::make_shared<HttpRequest>(client), RequestError::ClientsLimitReached);
+                } else {
+                    client->removeFromServer();
+                }
             }
 
             startAccept();
@@ -139,7 +147,18 @@ private:
                 }
 
                 if (e != boost::system::errc::operation_canceled) {
-                    removeFromServer();
+                    if (server.requestErrorHandler) {
+                        socket->cancel();
+                        server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::RequestTimeout);
+                        timeoutTimer.expires_from_now(server.httpConnectionTimeout);
+                        timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
+                            if (!reference.expired() && (e != boost::system::errc::operation_canceled)) {
+                                socket->cancel();
+                            }
+                        });
+                    } else {
+                        removeFromServer();
+                    }
                 }
             });
         }
@@ -150,28 +169,6 @@ private:
             server.httpClients.erase(it);
         }
 
-        void sendFinalHttpResponse(std::experimental::string_view response) {
-            if (!SendHttpResponses || response.empty()) {
-                removeFromServer();
-                return;
-            }
-
-            buffer.reset();
-
-            boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-                [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
-                    if (reference.expired()) {
-                        return;
-                    }
-
-                    if (e && server.verboseLogging) {
-                        std::cerr << "status HTTP header write error: " << e.message() << std::endl;
-                    }
-
-                    removeFromServer();
-                });
-        }
-
         void validateHttpHeader(size_t position = 0, size_t bytesRead = 0) {
             auto bytesToRead = buffer->size() - bytesRead;
             assert(bytesToRead >= 0);
@@ -180,13 +177,12 @@ private:
                     std::cerr << "HTTP client error: request header size is too large" << std::endl;
                 }
 
-                sendFinalHttpResponse(
-                    "431 Request Header Fields Too Large\r\n"
-                    "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                    "Total size of HTTP request header is too large");
+                if (server.requestErrorHandler) {
+                    server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::HttpHeaderTooLarge);
+                } else {
+                    removeFromServer();
+                }
+
                 return;
             }
 
@@ -201,16 +197,7 @@ private:
                             std::cerr << "HTTP client error: " << e.message() << std::endl;
                         }
 
-                        if (e == boost::system::errc::operation_canceled) {
-                            sendFinalHttpResponse(
-                                "HTTP/1.1 408 Request Timeout\r\n"
-                                "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                                "Connection: close\r\n"
-                                "\r\n");
-                        } else {
-                            removeFromServer();
-                        }
-
+                        removeFromServer();
                         return;
                     }
 
@@ -231,11 +218,12 @@ private:
                             std::cerr << "HTTP client error: bad  HTTP request header" << std::endl;
                         }
 
-                        sendFinalHttpResponse(
-                            "400 Bad Request\r\n"
-                            "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
-                            "Connection: close\r\n"
-                            "\r\n");
+                        if (server.requestErrorHandler) {
+                            server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::BadHttpRequest);
+                        } else {
+                            removeFromServer();
+                        }
+
                         return;
                     }
 
@@ -276,6 +264,7 @@ private:
     bool verboseLogging = true;
 
     RequestHandler requestHandler;
+    RequestErrorHandler requestErrorHandler;
 };
 
 }
