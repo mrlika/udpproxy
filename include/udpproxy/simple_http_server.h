@@ -13,16 +13,16 @@ namespace UdpProxy {
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 
+enum class RequestError {
+    ClientsLimitReached,
+    HttpHeaderTooLarge,
+    BadHttpRequest,
+    RequestTimeout
+};
+
 template <typename Allocator>
 class SimpleHttpServer {
 public:
-    enum class RequestError {
-        ClientsLimitReached,
-        HttpHeaderTooLarge,
-        BadHttpRequest,
-        RequestTimeout
-    };
-
     class HttpRequest {
     public:
         explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept

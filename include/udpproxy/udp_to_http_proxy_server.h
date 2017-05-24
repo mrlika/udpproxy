@@ -162,11 +162,11 @@ private:
         }
     }
 
-    void handleRequestError(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request, typename SimpleHttpServer<Allocator>::RequestError error) {
+    void handleRequestError(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request, RequestError error) {
         static std::experimental::string_view response;
 
         switch (error) {
-        case SimpleHttpServer<Allocator>::RequestError::ClientsLimitReached:
+        case RequestError::ClientsLimitReached:
             response =
                 "HTTP/1.1 429 Too Many Requests\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
@@ -176,7 +176,7 @@ private:
                 "Maximum number of clients reached"sv;
             break;
 
-        case SimpleHttpServer<Allocator>::RequestError::HttpHeaderTooLarge:
+        case RequestError::HttpHeaderTooLarge:
             response =
                 "HTTP/1.1 431 Request Header Fields Too Large\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
@@ -186,7 +186,7 @@ private:
                 "Total size of HTTP request header is too large"sv;
             break;
 
-        case SimpleHttpServer<Allocator>::RequestError::RequestTimeout:
+        case RequestError::RequestTimeout:
             response =
                 "HTTP/1.1 408 Request Timeout\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
@@ -194,7 +194,7 @@ private:
                 "\r\n"sv;
             break;
 
-        case SimpleHttpServer<Allocator>::RequestError::BadHttpRequest:
+        case RequestError::BadHttpRequest:
             response =
                 "HTTP/1.1 400 Bad Request\r\n"
                 "Server: " UDPPROXY_SERVER_NAME_DEFINE "\r\n"
