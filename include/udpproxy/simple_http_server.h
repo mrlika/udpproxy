@@ -114,16 +114,16 @@ private:
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
         HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
-                : server(server), socket(socket), buffer(std::make_shared<typename decltype(buffer)::element_type>(server.maxHttpHeaderSize)),
+                : server(server), socket(socket), remoteEndpoint(socket->remote_endpoint()), buffer(std::make_shared<typename decltype(buffer)::element_type>(server.maxHttpHeaderSize)),
                   timeoutTimer(socket->get_io_service()), httpHeaderParser{server.maxHttpHeaderSize} {
             if (server.verboseLogging) {
-                std::cerr << "new connection " << socket->remote_endpoint() << std::endl;
+                std::cerr << "new connection " << remoteEndpoint << std::endl;
             }
         }
 
         ~HttpClient() noexcept {
             if (server.verboseLogging) {
-                std::cerr << "remove connection " << socket->remote_endpoint() << std::endl;
+                std::cerr << "remove connection " << remoteEndpoint << std::endl;
             }
         }
 
@@ -256,6 +256,7 @@ private:
         SimpleHttpServer &server;
 
         std::shared_ptr<tcp::socket> socket;
+        tcp::endpoint remoteEndpoint;
         std::shared_ptr<std::vector<char, BufferAllocator>> buffer;
         boost::asio::system_timer timeoutTimer;
 

@@ -276,12 +276,10 @@ private:
             "\r\n"sv;
 
         boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-            [this, request = request, udpEndpoint] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+            [this, request = request, udpEndpoint, clientEndpoint = socket->remote_endpoint()] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                 if (request->getSocket().expired()) {
                     return;
                 }
-
-                auto clientEndpoint = request->getSocket().lock()->remote_endpoint();
 
                 if (e) {
                     if (verboseLogging) {
