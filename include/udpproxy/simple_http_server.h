@@ -20,7 +20,7 @@ enum class RequestError {
     RequestTimeout
 };
 
-template <typename Allocator>
+template <typename Allocator, typename RequestHandler>
 class SimpleHttpServer {
 public:
     class HttpRequest {
@@ -60,10 +60,8 @@ public:
         std::experimental::string_view headerFields;
     };
 
-    typedef std::function<void(std::shared_ptr<HttpRequest>) noexcept> RequestHandler;
-    typedef std::function<void(std::shared_ptr<HttpRequest>, RequestError) noexcept> RequestErrorHandler;
-
-    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint) : acceptor(ioService, endpoint) {}
+    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint, RequestHandler requestHandler)
+            : acceptor(ioService, endpoint), requestHandler(requestHandler) {}
 
     void runAsync() {
         startAccept();
@@ -77,12 +75,6 @@ public:
     size_t getMaxHttpClients() const noexcept { return maxHttpClients; }
     void setVerboseLogging(bool value) noexcept { verboseLogging = value; }
     bool getVerboseLogging() const noexcept { return verboseLogging; }
-
-    void setRequestHandler(RequestHandler handler) noexcept { requestHandler = handler; }
-    RequestHandler getRequestHandler() const noexcept { return requestHandler; }
-
-    void setRequestErrorHandler(RequestErrorHandler handler) noexcept { requestErrorHandler = handler; }
-    RequestErrorHandler getRequestErrorHandler() const noexcept { return requestErrorHandler; }
 
 private:
     void startAccept() {
@@ -109,11 +101,7 @@ private:
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
                 }
 
-                if (requestErrorHandler) {
-                    requestErrorHandler(std::make_shared<HttpRequest>(client), RequestError::ClientsLimitReached);
-                } else {
-                    client->removeFromServer();
-                }
+                requestHandler.handleRequestError(std::make_shared<HttpRequest>(client), RequestError::ClientsLimitReached);
             }
 
             startAccept();
@@ -147,18 +135,14 @@ private:
                 }
 
                 if (e != boost::system::errc::operation_canceled) {
-                    if (server.requestErrorHandler) {
-                        socket->cancel();
-                        server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::RequestTimeout);
-                        timeoutTimer.expires_from_now(server.httpConnectionTimeout);
-                        timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
-                            if (!reference.expired() && (e != boost::system::errc::operation_canceled)) {
-                                socket->cancel();
-                            }
-                        });
-                    } else {
-                        removeFromServer();
-                    }
+                    socket->cancel();
+                    timeoutTimer.expires_from_now(server.httpConnectionTimeout);
+                    timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
+                        if (!reference.expired() && (e != boost::system::errc::operation_canceled)) {
+                            socket->cancel();
+                        }
+                    });
+                    server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::RequestTimeout);
                 }
             });
         }
@@ -177,12 +161,7 @@ private:
                     std::cerr << "HTTP client error: request header size is too large" << std::endl;
                 }
 
-                if (server.requestErrorHandler) {
-                    server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::HttpHeaderTooLarge);
-                } else {
-                    removeFromServer();
-                }
-
+                server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::HttpHeaderTooLarge);
                 return;
             }
 
@@ -218,24 +197,15 @@ private:
                             std::cerr << "HTTP client error: bad  HTTP request header" << std::endl;
                         }
 
-                        if (server.requestErrorHandler) {
-                            server.requestErrorHandler(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::BadHttpRequest);
-                        } else {
-                            removeFromServer();
-                        }
-
+                        server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::BadHttpRequest);
                         return;
                     }
 
-                    if (server.requestHandler) {
-                        httpMethod = httpHeaderParser.getMethod();
-                        httpUri = httpHeaderParser.getUri();
-                        protocolVersion = httpHeaderParser.getProtocolVersion();
-                        httpHeaderFields = httpHeaderParser.getHeaderFields();
-                        server.requestHandler(std::make_shared<HttpRequest>(this->shared_from_this()));
-                    } else {
-                        removeFromServer();
-                    }
+                    httpMethod = httpHeaderParser.getMethod();
+                    httpUri = httpHeaderParser.getUri();
+                    protocolVersion = httpHeaderParser.getProtocolVersion();
+                    httpHeaderFields = httpHeaderParser.getHeaderFields();
+                    server.requestHandler.handleRequest(std::make_shared<HttpRequest>(this->shared_from_this()));
                 });
         }
 
@@ -262,9 +232,7 @@ private:
     boost::asio::system_timer::duration httpConnectionTimeout = 1s;
     size_t maxHttpClients = 0;
     bool verboseLogging = true;
-
     RequestHandler requestHandler;
-    RequestErrorHandler requestErrorHandler;
 };
 
 }

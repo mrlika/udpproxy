@@ -9,9 +9,7 @@ template <typename Allocator, bool SendHttpResponses>
 class BasicUdpToHttpProxyServer {
 public:
     BasicUdpToHttpProxyServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : udpServer(ioService), httpServer(ioService, endpoint) {
-        httpServer.setRequestHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequest, this, std::placeholders::_1));
-        httpServer.setRequestErrorHandler(std::bind(&BasicUdpToHttpProxyServer::handleRequestError, this, std::placeholders::_1, std::placeholders::_2));
+            : udpServer(ioService), httpServer(ioService, endpoint, *this) {
         udpServer.setStartUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::startUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2));
         udpServer.setReadUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::readUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
         udpServer.setStartClientHandler(std::bind(&BasicUdpToHttpProxyServer::startClientHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4));
@@ -49,6 +47,9 @@ public:
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
+    typedef SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&> HttpServer;
+    friend HttpServer;
+
     struct UdpInputCustomData {
         std::chrono::system_clock::time_point bitrateCalculationStart;
         size_t bytesIn = 0;
@@ -57,13 +58,13 @@ private:
     };
 
     struct ClientCustomData {
-        std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request;
+        std::shared_ptr<typename HttpServer::HttpRequest> request;
         std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
         size_t bytesOut = 0;
         double outBitrateKbit = 0;
     };
 
-    void writeJsonStatus(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request) {
+    void writeJsonStatus(const std::shared_ptr<typename HttpServer::HttpRequest>& request) {
         auto socket = request->getSocket().lock();
 
         if (verboseLogging) {
@@ -141,7 +142,7 @@ private:
             });
     }
 
-    void writeNotFoundResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request) {
+    void writeNotFoundResponse(const std::shared_ptr<typename HttpServer::HttpRequest>& request) {
         if (verboseLogging) {
             std::cerr << "wrong URI: " << request->getUri() << std::endl;
         }
@@ -155,14 +156,14 @@ private:
             "404 Not Found"sv);
     }
 
-    void writeResponse(const std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest>& request, std::experimental::string_view response) {
+    void writeResponse(const std::shared_ptr<typename HttpServer::HttpRequest>& request, std::experimental::string_view response) {
         if (SendHttpResponses) {
             boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response.cbegin(), response.length()),
                 [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
         }
     }
 
-    void handleRequestError(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request, RequestError error) {
+    void handleRequestError(std::shared_ptr<typename HttpServer::HttpRequest> request, RequestError error) {
         static std::experimental::string_view response;
 
         switch (error) {
@@ -206,7 +207,7 @@ private:
         writeResponse(request, response);
     }
 
-    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator>::HttpRequest> request) {
+    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&>::HttpRequest> request) {
         auto uri = request->getUri();
         auto socket = request->getSocket().lock();
 
@@ -374,7 +375,7 @@ private:
     }
 
     UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData> udpServer;
-    SimpleHttpServer<Allocator> httpServer;
+    HttpServer httpServer;
 
     bool verboseLogging = true;
     bool enableStatus = false;
