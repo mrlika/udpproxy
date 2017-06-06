@@ -47,7 +47,7 @@ public:
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
-    typedef SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&> HttpServer;
+    typedef SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&, SocketStreamFactory> HttpServer;
     friend HttpServer;
 
     struct UdpInputCustomData {
@@ -65,10 +65,10 @@ private:
     };
 
     void writeJsonStatus(const std::shared_ptr<typename HttpServer::HttpRequest>& request) {
-        auto socket = request->getSocket().lock();
+        auto stream = request->getStream().lock();
 
         if (verboseLogging) {
-            std::cerr << "status HTTP client: " << socket->remote_endpoint() << std::endl;
+            std::cerr << "status HTTP client: " << stream->lowest_layer().remote_endpoint() << std::endl;
         }
 
         static constexpr std::experimental::string_view header =
@@ -120,9 +120,9 @@ private:
         // TODO: optimize to use direct buffer access without copying
         auto response = std::make_shared<std::string>(json.str());
 
-        boost::asio::async_write(*socket, boost::asio::buffer(header.cbegin(), header.length()),
+        boost::asio::async_write(*stream, boost::asio::buffer(header.cbegin(), header.length()),
             [verboseLogging = verboseLogging, request = request, response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
-                if (request->getSocket().expired()) {
+                if (request->getStream().expired()) {
                     return;
                 }
 
@@ -133,7 +133,7 @@ private:
                     return;
                 }
 
-                boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response->c_str(), response->length()),
+                boost::asio::async_write(*request->getStream().lock(), boost::asio::buffer(response->c_str(), response->length()),
                     [verboseLogging = verboseLogging, request = request, response = response] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
                         if (e && verboseLogging) {
                             std::cerr << "status HTTP body write error: " << e.message() << std::endl;
@@ -158,7 +158,7 @@ private:
 
     void writeResponse(const std::shared_ptr<typename HttpServer::HttpRequest>& request, std::experimental::string_view response) {
         if (SendHttpResponses) {
-            boost::asio::async_write(*request->getSocket().lock(), boost::asio::buffer(response.cbegin(), response.length()),
+            boost::asio::async_write(*request->getStream().lock(), boost::asio::buffer(response.cbegin(), response.length()),
                 [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
         }
     }
@@ -207,9 +207,9 @@ private:
         writeResponse(request, response);
     }
 
-    void handleRequest(std::shared_ptr<typename SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&>::HttpRequest> request) {
+    void handleRequest(std::shared_ptr<typename HttpServer::HttpRequest> request) {
         auto uri = request->getUri();
-        auto socket = request->getSocket().lock();
+        auto stream = request->getStream().lock();
 
         if (verboseLogging) {
             std::cerr << "request: " << request->getMethod() << ' ' << uri << ' ' << request->getProtocolVersion() << std::endl;
@@ -296,7 +296,7 @@ private:
         udp::endpoint udpEndpoint = {address, static_cast<unsigned short>(port)};
 
         try {
-            udpServer.addClient(socket, udpEndpoint, ClientCustomData{request});
+            udpServer.addClient(stream, udpEndpoint, ClientCustomData{request});
         } catch (const boost::system::system_error &e) {
             std::cerr << "UDP socket error for " << udpEndpoint << ": " << e.what() << std::endl;
             writeResponse(request,
@@ -317,9 +317,9 @@ private:
             "Connection: close\r\n"
             "\r\n"sv;
 
-        boost::asio::async_write(*socket, boost::asio::buffer(response.cbegin(), response.length()),
-            [this, request = request, udpEndpoint, clientEndpoint = socket->remote_endpoint()] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
-                if (request->getSocket().expired()) {
+        boost::asio::async_write(*stream, boost::asio::buffer(response.cbegin(), response.length()),
+            [this, request = request, udpEndpoint, clientEndpoint = stream->lowest_layer().remote_endpoint()] (const boost::system::error_code &e, std::size_t /*bytesSent*/) {
+                if (request->getStream().expired()) {
                     return;
                 }
 
@@ -374,7 +374,7 @@ private:
         }
     }
 
-    UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData> udpServer;
+    UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData, typename HttpServer::StreamType> udpServer;
     HttpServer httpServer;
 
     bool verboseLogging = true;

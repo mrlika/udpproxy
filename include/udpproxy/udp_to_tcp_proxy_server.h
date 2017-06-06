@@ -20,7 +20,7 @@ enum class OutputQueueOverflowAlgorithm {
     DropData
 };
 
-template <typename Allocator, typename UdpInputCustomData, typename ClientCustomData>
+template <typename Allocator, typename UdpInputCustomData, typename ClientCustomData, typename StreamType>
 class UdpToTcpProxyServer {
 public:
     typedef std::function<void(const udp::endpoint &udpEndpoint, UdpInputCustomData &udpInputData) noexcept> NewUdpInputHandler;
@@ -81,11 +81,11 @@ public:
     WriteClientHandler getWriteClientHandler() const noexcept { return writeClientHandler; }
 
     void detectDisconnectedClientsAsync() {
-        // Slowly read clients' sockets to detect disconnected ones
+        // Slowly read clients' stream to detect disconnected ones
         startReadClients();
     }
 
-    void addClient(const std::weak_ptr<tcp::socket> &clientSocket, const udp::endpoint &udpEndpoint, const ClientCustomData& clientData) {
+    void addClient(const std::weak_ptr<StreamType> &clientStream, const udp::endpoint &udpEndpoint, const ClientCustomData& clientData) {
         uint64_t inputId = getEndpointId(udpEndpoint);
 
         auto udpInputIterator = udpInputs.find(inputId);
@@ -102,7 +102,7 @@ public:
             udpInput = udpInputIterator->second.get();
         }
 
-        udpInput->addClient(clientSocket, clientData);
+        udpInput->addClient(clientStream, clientData);
     }
 
     void startClient(const tcp::endpoint &clientEndpoint, const udp::endpoint &udpEndpoint) {
@@ -295,14 +295,14 @@ private:
                 });
         }
 
-        void addClient(const std::weak_ptr<tcp::socket>& socket, const ClientCustomData& clientData) {
-            auto client = std::make_shared<typename UdpInput::Client>(socket, *this, clientData);
+        void addClient(const std::weak_ptr<StreamType>& stream, const ClientCustomData& clientData) {
+            auto client = std::make_shared<typename UdpInput::Client>(stream, *this, clientData);
             clients.emplace_back(client);
         }
 
         struct Client : public std::enable_shared_from_this<UdpInput::Client> {
-            Client(const std::weak_ptr<tcp::socket> &socket, UdpInput &udpInput, const ClientCustomData& customData) noexcept
-                    : socket(socket), server(udpInput.server), udpInput(udpInput), remoteEndpoint(socket.lock()->remote_endpoint()), customData(customData) {
+            Client(const std::weak_ptr<StreamType> &stream, UdpInput &udpInput, const ClientCustomData& customData) noexcept
+                    : stream(stream), server(udpInput.server), udpInput(udpInput), remoteEndpoint(stream.lock()->lowest_layer().remote_endpoint()), customData(customData) {
                 if (server.verboseLogging) {
                     std::cerr << "new TCP client " << remoteEndpoint << " for " << udpInput.udpEndpoint <<  std::endl;
                 }
@@ -323,12 +323,12 @@ private:
             }
 
             void startWriteData(std::shared_ptr<std::vector<uint8_t, InputBuffersAllocator>> &buffer) {
-                if (socket.expired()) {
+                if (stream.expired()) {
                     server.removeClient(this);
                     return;
                 }
 
-                boost::asio::async_write(*socket.lock(), boost::asio::buffer(buffer->data(), buffer->size()),
+                boost::asio::async_write(*stream.lock(), boost::asio::buffer(buffer->data(), buffer->size()),
                     [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = buffer] (const boost::system::error_code &e, std::size_t bytesSent) {
                         if (reference.expired()) {
                             return;
@@ -363,7 +363,7 @@ private:
                 }
 
                 readSomeDone = false;
-                socket.lock()->async_read_some(boost::asio::buffer(server.clientsReadBuffer->data(), server.clientsReadBuffer->size()),
+                stream.lock()->async_read_some(boost::asio::buffer(server.clientsReadBuffer->data(), server.clientsReadBuffer->size()),
                     [this, reference = std::weak_ptr<Client>(this->shared_from_this()), buffer = server.clientsReadBuffer] (const boost::system::error_code &e, std::size_t /*bytesRead*/) mutable {
                         if (reference.expired()) {
                             return;
@@ -388,7 +388,7 @@ private:
                 }
             }
 
-            std::weak_ptr<tcp::socket> socket;
+            std::weak_ptr<StreamType> stream;
             UdpToTcpProxyServer &server;
             UdpInput &udpInput;
             tcp::endpoint remoteEndpoint;
@@ -442,7 +442,7 @@ private:
                 auto& clients = udpInputIt->second->clients;
                 for (auto clientIt = clients.begin(); clientIt != clients.end();) {
                     auto& client = *clientIt->get();
-                    if (!client.socket.expired()) {
+                    if (!client.stream.expired()) {
                         client.doReadCheck();
                         ++clientIt;
                     } else {

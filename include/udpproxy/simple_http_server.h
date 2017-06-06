@@ -20,9 +20,22 @@ enum class RequestError {
     RequestTimeout
 };
 
-template <typename Allocator, typename RequestHandler>
+struct SocketStreamFactory {
+    typedef tcp::socket StreamType;
+
+    static std::shared_ptr<StreamType> create(boost::asio::io_service &ioService) {
+        return std::make_shared<StreamType>(ioService);
+    }
+
+    static void start(std::shared_ptr<StreamType>&) {
+    }
+};
+
+template <typename Allocator, typename RequestHandler, typename StreamFactory>
 class SimpleHttpServer {
 public:
+    typedef typename std::remove_reference<StreamFactory>::type::StreamType StreamType;
+
     class HttpRequest {
     public:
         explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept
@@ -43,7 +56,11 @@ public:
         std::experimental::string_view getUri() const noexcept { return uri; }
         std::experimental::string_view getProtocolVersion() const noexcept { return protocolVersion; }
         std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
-        std::weak_ptr<tcp::socket> getSocket() const { return httpClient.expired() ? std::weak_ptr<tcp::socket>() : std::weak_ptr<tcp::socket>(httpClient.lock()->socket); }
+        std::weak_ptr<StreamType> getStream() const {
+            return httpClient.expired()
+                    ? std::weak_ptr<StreamType>()
+                    : std::weak_ptr<StreamType>(httpClient.lock()->stream);
+        }
 
         void cancelTimeout() const {
             if (!httpClient.expired()) {
@@ -60,8 +77,8 @@ public:
         std::experimental::string_view headerFields;
     };
 
-    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint, RequestHandler requestHandler)
-            : acceptor(ioService, endpoint), requestHandler(requestHandler) {}
+    SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint, RequestHandler requestHandler = typename std::remove_reference<RequestHandler>::type(), StreamFactory streamFactory = typename std::remove_reference<StreamFactory>::type())
+            : acceptor(ioService, endpoint), requestHandler(requestHandler), streamFactory(streamFactory) {}
 
     void runAsync() {
         startAccept();
@@ -78,9 +95,9 @@ public:
 
 private:
     void startAccept() {
-        auto socket = std::make_shared<tcp::socket>(acceptor.get_io_service());
+        auto stream = streamFactory.create(acceptor.get_io_service());
 
-        acceptor.async_accept(*socket, [this, socket = socket] (const boost::system::error_code &e) mutable {
+        acceptor.async_accept(stream->lowest_layer(), [this, stream = stream] (const boost::system::error_code &e) mutable {
             if (e) {
                 if (e == boost::system::errc::operation_canceled) {
                     return;
@@ -90,15 +107,17 @@ private:
                 return; // FIXME: is it good to stop accept loop?
             }
 
-            auto client = std::make_shared<HttpClient>(socket, *this);
+            auto client = std::make_shared<HttpClient>(stream, *this);
             httpClients.emplace_back(client);
             client->startCancelTimer();
+
+            streamFactory.start(stream);
 
             if ((maxHttpClients == 0) || (httpClients.size() <= maxHttpClients)) {
                 client->validateHttpHeader();
             } else {
                 if (verboseLogging) {
-                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << socket->remote_endpoint() << std::endl;
+                    std::cerr << "Maximum of HTTP clients reached. Connection refused: " << stream->lowest_layer().remote_endpoint() << std::endl;
                 }
 
                 requestHandler.handleRequestError(std::make_shared<HttpRequest>(client), RequestError::ClientsLimitReached);
@@ -109,9 +128,9 @@ private:
     }
 
     struct HttpClient : public std::enable_shared_from_this<HttpClient> {
-        HttpClient(const std::shared_ptr<tcp::socket> &socket, SimpleHttpServer &server)
-                : server(server), socket(socket), remoteEndpoint(socket->remote_endpoint()), buffer(std::make_shared<typename decltype(buffer)::element_type>(server.maxHttpHeaderSize)),
-                  timeoutTimer(socket->get_io_service()), httpHeaderParser{server.maxHttpHeaderSize} {
+        HttpClient(const std::shared_ptr<StreamType> &stream, SimpleHttpServer &server)
+                : server(server), stream(stream), remoteEndpoint(stream->lowest_layer().remote_endpoint()), buffer(std::make_shared<typename decltype(buffer)::element_type>(server.maxHttpHeaderSize)),
+                  timeoutTimer(stream->get_io_service()), httpHeaderParser{server.maxHttpHeaderSize} {
             if (server.verboseLogging) {
                 std::cerr << "new connection " << remoteEndpoint << std::endl;
             }
@@ -135,11 +154,11 @@ private:
                 }
 
                 if (e != boost::system::errc::operation_canceled) {
-                    socket->cancel();
+                    stream->lowest_layer().cancel();
                     timeoutTimer.expires_from_now(server.httpConnectionTimeout);
                     timeoutTimer.async_wait([this, reference = std::weak_ptr<HttpClient>(this->shared_from_this())] (const boost::system::error_code &e) {
                         if (!reference.expired() && (e != boost::system::errc::operation_canceled)) {
-                            socket->cancel();
+                            stream->lowest_layer().cancel();
                         }
                     });
                     server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::RequestTimeout);
@@ -165,7 +184,7 @@ private:
                 return;
             }
 
-            socket->async_read_some(boost::asio::buffer(buffer->data() + bytesRead, buffer->size() - bytesRead),
+            stream->async_read_some(boost::asio::buffer(buffer->data() + bytesRead, buffer->size() - bytesRead),
                 [this, reference = std::weak_ptr<HttpClient>(this->shared_from_this()), buffer = buffer, position, bytesRead] (const boost::system::error_code &e, size_t size) {
                     if (reference.expired()) {
                         return;
@@ -213,7 +232,7 @@ private:
 
         SimpleHttpServer &server;
 
-        std::shared_ptr<tcp::socket> socket;
+        std::shared_ptr<StreamType> stream;
         tcp::endpoint remoteEndpoint;
         std::shared_ptr<std::vector<char, BufferAllocator>> buffer;
         boost::asio::system_timer timeoutTimer;
@@ -233,6 +252,7 @@ private:
     size_t maxHttpClients = 0;
     bool verboseLogging = true;
     RequestHandler requestHandler;
+    StreamFactory streamFactory;
 };
 
 }
