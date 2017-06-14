@@ -21,4 +21,4 @@ include_directories(include)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out)
 
 add_executable(udpproxy src/main.cpp ${HEADERS})
-target_link_libraries(udpproxy ${Boost_LIBRARIES})
+target_link_libraries(udpproxy ${Boost_LIBRARIES} ssl crypto)

@@ -118,6 +118,15 @@ int main(int argc, const char * const argv[]) {
         server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
         server.setMaxHttpHeaderSize(maxHttpHeaderSize);
 
+        /*ssl::context& context = server.getSslContext();
+        context.set_options(
+            boost::asio::ssl::context::default_workarounds
+            | boost::asio::ssl::context::no_sslv2
+            | boost::asio::ssl::context::single_dh_use);
+        context.use_certificate_file("cert6.pem", ssl::context::pem);
+        context.use_certificate_chain_file("fullchain6.pem");
+        context.use_private_key_file("privkey6.pem", ssl::context::pem);*/
+
         server.runAsync();
 
         std::cout << "Running on port " << port << std::endl;

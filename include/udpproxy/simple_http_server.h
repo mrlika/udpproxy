@@ -27,55 +27,62 @@ struct SocketStreamFactory {
         return std::make_shared<StreamType>(ioService);
     }
 
-    static void start(std::shared_ptr<StreamType>&) {
+    static void startAsync(std::shared_ptr<StreamType> &stream, std::function<void(const boost::system::error_code& error)> handler) {
+        stream->get_io_service().post([handler] () { handler(boost::system::error_code()); });
     }
 };
 
-template <typename Allocator, typename RequestHandler, typename StreamFactory>
-class SimpleHttpServer {
+template <typename RequestHandler, typename StreamFactory, typename Allocator>
+class SimpleHttpServer;
+
+template <typename RequestHandler, typename StreamFactory = SocketStreamFactory, typename Allocator = std::allocator<char>>
+class HttpRequest {
 public:
     typedef typename std::remove_reference<StreamFactory>::type::StreamType StreamType;
 
-    class HttpRequest {
-    public:
-        explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer::HttpClient> &httpClient) noexcept
-            : httpClient(httpClient), buffer(httpClient->buffer), method(httpClient->httpMethod), uri(httpClient->httpUri),
-              protocolVersion(httpClient->protocolVersion), headerFields(httpClient->httpHeaderFields) {
+    explicit HttpRequest(const std::shared_ptr<typename SimpleHttpServer<RequestHandler, StreamFactory, Allocator>::HttpClient> &httpClient) noexcept
+        : httpClient(httpClient), buffer(httpClient->buffer), method(httpClient->httpMethod), uri(httpClient->httpUri),
+          protocolVersion(httpClient->protocolVersion), headerFields(httpClient->httpHeaderFields) {
+    }
+
+    HttpRequest(const HttpRequest&) = default;
+    HttpRequest(HttpRequest&&) = default;
+
+    ~HttpRequest() noexcept {
+        if (!httpClient.expired()) {
+            httpClient.lock()->removeFromServer();
         }
+    }
 
-        HttpRequest(const HttpRequest&) = default;
-        HttpRequest(HttpRequest&&) = default;
+    std::experimental::string_view getMethod() const noexcept { return method; }
+    std::experimental::string_view getUri() const noexcept { return uri; }
+    std::experimental::string_view getProtocolVersion() const noexcept { return protocolVersion; }
+    std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
+    std::weak_ptr<StreamType> getStream() const {
+        return httpClient.expired()
+                ? std::weak_ptr<StreamType>()
+                : std::weak_ptr<StreamType>(httpClient.lock()->stream);
+    }
 
-        ~HttpRequest() noexcept {
-            if (!httpClient.expired()) {
-                httpClient.lock()->removeFromServer();
-            }
+    void cancelTimeout() const {
+        if (!httpClient.expired()) {
+            httpClient.lock()->timeoutTimer.cancel();
         }
+    }
 
-        std::experimental::string_view getMethod() const noexcept { return method; }
-        std::experimental::string_view getUri() const noexcept { return uri; }
-        std::experimental::string_view getProtocolVersion() const noexcept { return protocolVersion; }
-        std::experimental::string_view getHeaderFields() const noexcept { return headerFields; }
-        std::weak_ptr<StreamType> getStream() const {
-            return httpClient.expired()
-                    ? std::weak_ptr<StreamType>()
-                    : std::weak_ptr<StreamType>(httpClient.lock()->stream);
-        }
+private:
+    std::weak_ptr<typename SimpleHttpServer<RequestHandler, StreamFactory, Allocator>::HttpClient> httpClient;
+    std::shared_ptr<std::vector<char, typename SimpleHttpServer<RequestHandler, StreamFactory, Allocator>::HttpClient::BufferAllocator>> buffer;
+    std::experimental::string_view method;
+    std::experimental::string_view uri;
+    std::experimental::string_view protocolVersion;
+    std::experimental::string_view headerFields;
+};
 
-        void cancelTimeout() const {
-            if (!httpClient.expired()) {
-                httpClient.lock()->timeoutTimer.cancel();
-            }
-        }
-
-    private:
-        std::weak_ptr<typename SimpleHttpServer::HttpClient> httpClient;
-        std::shared_ptr<std::vector<char, typename SimpleHttpServer::HttpClient::BufferAllocator>> buffer;
-        std::experimental::string_view method;
-        std::experimental::string_view uri;
-        std::experimental::string_view protocolVersion;
-        std::experimental::string_view headerFields;
-    };
+template <typename RequestHandler, typename StreamFactory = SocketStreamFactory, typename Allocator = std::allocator<char>>
+class SimpleHttpServer {
+public:
+    typedef typename std::remove_reference<StreamFactory>::type::StreamType StreamType;
 
     SimpleHttpServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint, RequestHandler requestHandler = typename std::remove_reference<RequestHandler>::type(), StreamFactory streamFactory = typename std::remove_reference<StreamFactory>::type())
             : acceptor(ioService, endpoint), requestHandler(requestHandler), streamFactory(streamFactory) {}
@@ -94,6 +101,9 @@ public:
     bool getVerboseLogging() const noexcept { return verboseLogging; }
 
 private:
+    template <typename RequestHandlerF, typename StreamFactoryF, typename AllocatorF>
+    friend class HttpRequest;
+
     void startAccept() {
         auto stream = streamFactory.create(acceptor.get_io_service());
 
@@ -111,16 +121,30 @@ private:
             httpClients.emplace_back(client);
             client->startCancelTimer();
 
-            streamFactory.start(stream);
-
             if ((maxHttpClients == 0) || (httpClients.size() <= maxHttpClients)) {
-                client->validateHttpHeader();
+                streamFactory.startAsync(stream, [verboseLogging = this->verboseLogging, client = std::weak_ptr<HttpClient>(client->shared_from_this())] (const boost::system::error_code &e) {
+                    if (client.expired()) {
+                        return;
+                    }
+
+                    if (e) {
+                        if (verboseLogging) {
+                            std::cerr << "HTTP client start error: " << e.message() << std::endl;
+                        }
+
+                        client.lock()->removeFromServer();
+                        return;
+                    }
+
+                    client.lock()->validateHttpHeader();
+                });
             } else {
                 if (verboseLogging) {
                     std::cerr << "Maximum of HTTP clients reached. Connection refused: " << stream->lowest_layer().remote_endpoint() << std::endl;
                 }
 
-                requestHandler.handleRequestError(std::make_shared<HttpRequest>(client), RequestError::ClientsLimitReached);
+                // FIXME: initialize connection (i.e. SSL) using streamFactory.startAsync here?
+                requestHandler.handleRequestError(std::make_shared<HttpRequest<RequestHandler, StreamFactory, Allocator>>(client), RequestError::ClientsLimitReached);
             }
 
             startAccept();
@@ -161,7 +185,7 @@ private:
                             stream->lowest_layer().cancel();
                         }
                     });
-                    server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::RequestTimeout);
+                    server.requestHandler.handleRequestError(std::make_shared<HttpRequest<RequestHandler, StreamFactory, Allocator>>(this->shared_from_this()), RequestError::RequestTimeout);
                 }
             });
         }
@@ -180,7 +204,7 @@ private:
                     std::cerr << "HTTP client error: request header size is too large" << std::endl;
                 }
 
-                server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::HttpHeaderTooLarge);
+                server.requestHandler.handleRequestError(std::make_shared<HttpRequest<RequestHandler, StreamFactory, Allocator>>(this->shared_from_this()), RequestError::HttpHeaderTooLarge);
                 return;
             }
 
@@ -216,7 +240,7 @@ private:
                             std::cerr << "HTTP client error: bad  HTTP request header" << std::endl;
                         }
 
-                        server.requestHandler.handleRequestError(std::make_shared<HttpRequest>(this->shared_from_this()), RequestError::BadHttpRequest);
+                        server.requestHandler.handleRequestError(std::make_shared<HttpRequest<RequestHandler, StreamFactory, Allocator>>(this->shared_from_this()), RequestError::BadHttpRequest);
                         return;
                     }
 
@@ -224,7 +248,7 @@ private:
                     httpUri = httpHeaderParser.getUri();
                     protocolVersion = httpHeaderParser.getProtocolVersion();
                     httpHeaderFields = httpHeaderParser.getHeaderFields();
-                    server.requestHandler.handleRequest(std::make_shared<HttpRequest>(this->shared_from_this()));
+                    server.requestHandler.handleRequest(std::make_shared<HttpRequest<RequestHandler, StreamFactory, Allocator>>(this->shared_from_this()));
                 });
         }
 
