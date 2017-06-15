@@ -51,7 +51,7 @@ int main(int argc, const char * const argv[]) {
     unsigned httpConnectionTimeout;
     size_t maxHttpHeaderSize;
     std::string keyFile;
-    std::string certificateFile;
+    std::string certificateChainFile;
     std::string keyFilePassword;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
@@ -90,7 +90,7 @@ int main(int argc, const char * const argv[]) {
         ("httpheader,H", po::value<size_t>(&maxHttpHeaderSize)->default_value(4 * 1024), "Maximum input HTTP header size in bytes")
         ("key", po::value<std::string>(&keyFile)->default_value(""), "Private key file in PEM format for SSL\\TLS")
         ("keypass", po::value<std::string>(&keyFilePassword)->default_value(""), "Private key file password")
-        ("cert", po::value<std::string>(&certificateFile)->default_value(""), "Certificate file in PEM format for SSL\\TLS");
+        ("cert", po::value<std::string>(&certificateChainFile)->default_value(""), "Certificate or full chain file in PEM format for SSL\\TLS");
 
     po::variables_map variablesMap;
     try {
@@ -124,7 +124,7 @@ int main(int argc, const char * const argv[]) {
         server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
         server.setMaxHttpHeaderSize(maxHttpHeaderSize);
 
-        if (!keyFile.empty() && !certificateFile.empty()) {
+        if (!keyFile.empty() && !certificateChainFile.empty()) {
             server.enableSsl(true);
             boost::asio::ssl::context& context = server.getSslContext();
             context.set_options(
@@ -132,7 +132,7 @@ int main(int argc, const char * const argv[]) {
                 | boost::asio::ssl::context::no_sslv2
                 | boost::asio::ssl::context::single_dh_use);
             context.use_private_key_file(keyFile, boost::asio::ssl::context::pem);
-            context.use_certificate_file(certificateFile, boost::asio::ssl::context::pem);
+            context.use_certificate_chain_file(certificateChainFile);
             if (!keyFilePassword.empty()) {
                 context.set_password_callback([keyFilePassword] (size_t maxLength, boost::asio::ssl::context_base::password_purpose /*purpose*/) {
                     return keyFilePassword.length() < maxLength ? keyFilePassword : "";
