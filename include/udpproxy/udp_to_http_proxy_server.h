@@ -2,6 +2,7 @@
 
 #include "simple_http_server.h"
 #include "udp_to_tcp_proxy_server.h"
+#include "ssl_stream_factory.h"
 
 namespace UdpProxy {
 
@@ -9,7 +10,8 @@ template <typename Allocator, bool SendHttpResponses>
 class BasicUdpToHttpProxyServer {
 public:
     BasicUdpToHttpProxyServer(boost::asio::io_service &ioService, const tcp::endpoint &endpoint)
-            : udpServer(ioService), httpServer(ioService, endpoint, *this) {
+            : udpServer(ioService), httpServer(ioService, endpoint, *this, sslStreamFactory) {
+        sslStreamFactory.enableSsl(false);
         udpServer.setStartUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::startUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2));
         udpServer.setReadUdpInputHandler(std::bind(&BasicUdpToHttpProxyServer::readUdpInputHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
         udpServer.setStartClientHandler(std::bind(&BasicUdpToHttpProxyServer::startClientHandler, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, std::placeholders::_4));
@@ -20,6 +22,9 @@ public:
         udpServer.detectDisconnectedClientsAsync();
         httpServer.runAsync();
     }
+
+    void enableSsl(bool enable) { sslStreamFactory.enableSsl(enable); }
+    ssl::context& getSslContext() { return sslStreamFactory.getContext(); }
 
     void setMaxHttpHeaderSize(size_t value) noexcept { httpServer.setMaxHttpHeaderSize(value); }
     size_t getMaxHttpHeaderSize() const noexcept { return httpServer.getMaxHttpHeaderSize(); }
@@ -47,7 +52,8 @@ public:
     boost::asio::ip::address getMulticastInterfaceAddress() const noexcept { return udpServer.getMulticastInterfaceAddress(); }
 
 private:
-    typedef SimpleHttpServer<Allocator, BasicUdpToHttpProxyServer&, SocketStreamFactory> HttpServer;
+    typedef UdpProxy::SimpleHttpServer<BasicUdpToHttpProxyServer&, SslStreamFactory&, Allocator> HttpServer;
+    typedef UdpProxy::HttpRequest<BasicUdpToHttpProxyServer&, SslStreamFactory&, Allocator> HttpRequest;
     friend HttpServer;
 
     struct UdpInputCustomData {
@@ -58,13 +64,13 @@ private:
     };
 
     struct ClientCustomData {
-        std::shared_ptr<typename HttpServer::HttpRequest> request;
+        std::shared_ptr<HttpRequest> request;
         std::chrono::system_clock::time_point bitrateCalculationStart = std::chrono::system_clock::time_point::min();
         size_t bytesOut = 0;
         double outBitrateKbit = 0;
     };
 
-    void writeJsonStatus(const std::shared_ptr<typename HttpServer::HttpRequest>& request) {
+    void writeJsonStatus(const std::shared_ptr<HttpRequest>& request) {
         auto stream = request->getStream().lock();
 
         if (verboseLogging) {
@@ -142,7 +148,7 @@ private:
             });
     }
 
-    void writeNotFoundResponse(const std::shared_ptr<typename HttpServer::HttpRequest>& request) {
+    void writeNotFoundResponse(const std::shared_ptr<HttpRequest>& request) {
         if (verboseLogging) {
             std::cerr << "wrong URI: " << request->getUri() << std::endl;
         }
@@ -156,14 +162,14 @@ private:
             "404 Not Found"sv);
     }
 
-    void writeResponse(const std::shared_ptr<typename HttpServer::HttpRequest>& request, std::experimental::string_view response) {
+    void writeResponse(const std::shared_ptr<HttpRequest>& request, std::experimental::string_view response) {
         if (SendHttpResponses) {
             boost::asio::async_write(*request->getStream().lock(), boost::asio::buffer(response.cbegin(), response.length()),
                 [request = request] (const boost::system::error_code &/*e*/, std::size_t /*bytesSent*/) {});
         }
     }
 
-    void handleRequestError(std::shared_ptr<typename HttpServer::HttpRequest> request, RequestError error) {
+    void handleRequestError(std::shared_ptr<HttpRequest> request, RequestError error) {
         static std::experimental::string_view response;
 
         switch (error) {
@@ -207,7 +213,7 @@ private:
         writeResponse(request, response);
     }
 
-    void handleRequest(std::shared_ptr<typename HttpServer::HttpRequest> request) {
+    void handleRequest(std::shared_ptr<HttpRequest> request) {
         auto uri = request->getUri();
         auto stream = request->getStream().lock();
 
@@ -374,6 +380,7 @@ private:
         }
     }
 
+    SslStreamFactory sslStreamFactory;
     UdpToTcpProxyServer<Allocator, UdpInputCustomData, ClientCustomData, typename HttpServer::StreamType> udpServer;
     HttpServer httpServer;
 

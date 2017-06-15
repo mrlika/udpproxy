@@ -50,6 +50,9 @@ int main(int argc, const char * const argv[]) {
     boost::asio::ip::address multicastInterfaceAddress;
     unsigned httpConnectionTimeout;
     size_t maxHttpHeaderSize;
+    std::string keyFile;
+    std::string certificateFile;
+    std::string keyFilePassword;
 
     std::cout << UdpProxy::SERVER_NAME << std::endl;
 
@@ -84,7 +87,10 @@ int main(int argc, const char * const argv[]) {
             }
         }), "Multicast interface IP address")
         ("httptimeout,T", po::value<unsigned>(&httpConnectionTimeout)->default_value(1), "Timeout for HTTP connections in seconds (0 = disable)")
-        ("httpheader,H", po::value<size_t>(&maxHttpHeaderSize)->default_value(4 * 1024), "Maximum input HTTP header size in bytes");
+        ("httpheader,H", po::value<size_t>(&maxHttpHeaderSize)->default_value(4 * 1024), "Maximum input HTTP header size in bytes")
+        ("key", po::value<std::string>(&keyFile)->default_value(""), "Private key file in PEM format for SSL\\TLS")
+        ("keypass", po::value<std::string>(&keyFilePassword)->default_value(""), "Private key file password")
+        ("cert", po::value<std::string>(&certificateFile)->default_value(""), "Certificate file in PEM format for SSL\\TLS");
 
     po::variables_map variablesMap;
     try {
@@ -117,6 +123,22 @@ int main(int argc, const char * const argv[]) {
         server.setMulticastInterfaceAddress(multicastInterfaceAddress);
         server.setHttpConnectionTimeout(std::chrono::seconds(httpConnectionTimeout));
         server.setMaxHttpHeaderSize(maxHttpHeaderSize);
+
+        if (!keyFile.empty() && !certificateFile.empty()) {
+            server.enableSsl(true);
+            boost::asio::ssl::context& context = server.getSslContext();
+            context.set_options(
+                boost::asio::ssl::context::default_workarounds
+                | boost::asio::ssl::context::no_sslv2
+                | boost::asio::ssl::context::single_dh_use);
+            context.use_private_key_file(keyFile, boost::asio::ssl::context::pem);
+            context.use_certificate_file(certificateFile, boost::asio::ssl::context::pem);
+            if (!keyFilePassword.empty()) {
+                context.set_password_callback([keyFilePassword] (size_t maxLength, boost::asio::ssl::context_base::password_purpose /*purpose*/) {
+                    return keyFilePassword.length() < maxLength ? keyFilePassword : "";
+                });
+            }
+        }
 
         server.runAsync();
 
