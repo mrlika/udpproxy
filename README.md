@@ -1,5 +1,5 @@
 # udpproxy
-UDP proxy utility like udpxy implemented with asynchronous I/O and SSL/TLS support
+UDP proxy utility like udpxy implemented with asynchronous I/O and SSL/TLS support.
 
 Better buffer management model, comparing to udpxy, provides more reliable data transfer. Single threaded application (like Node.js). Can be used as C++ library for easy embedding into applications (Boost.Asio required).
 
@@ -19,4 +19,4 @@ Options:
   -H [ --httpheader ] arg (=4096)     Maximum input HTTP header size in bytes  
   --key arg                           Private key file in PEM format for SSL\TLS  
   --keypass arg                       Private key file password  
-  --cert arg                          Certificate file in PEM format for SSL\TLS  
+  --cert arg                          Certificate or full chain file in PEM format for SSL\TLS  
