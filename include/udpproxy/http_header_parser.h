@@ -6,25 +6,25 @@
 namespace UdpProxy {
 
 template <typename Iterator>
-class HttpHeaderParser {
+class HttpRequestHeaderParser {
 public:
-    explicit HttpHeaderParser(size_t maxHeaderSize) noexcept
+    explicit HttpRequestHeaderParser(size_t maxHeaderSize) noexcept
             : maxHeaderSize(maxHeaderSize),
-              currentMatcher(std::bind(&HttpHeaderParser::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
+              currentMatcher(std::bind(&HttpRequestHeaderParser::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
     }
 
-    HttpHeaderParser(const HttpHeaderParser&) = delete;
-    HttpHeaderParser(HttpHeaderParser&&) = delete;
+    HttpRequestHeaderParser(const HttpRequestHeaderParser&) = delete;
+    HttpRequestHeaderParser(HttpRequestHeaderParser&&) = delete;
 
     std::pair<Iterator, bool> operator()(Iterator begin, Iterator end) noexcept {
         return currentMatcher(begin, end);
     }
 
     bool isSucceeded() { return success; }
-    std::experimental::string_view getMethod() { return {methodBegin, static_cast<size_t>(methodEnd - methodBegin)}; }
-    std::experimental::string_view getUri() { return {uriBegin, static_cast<size_t>(uriEnd - uriBegin)}; }
-    std::experimental::string_view getProtocolVersion() { return {protocolVersionBegin, static_cast<size_t>(protocolVersionEnd - protocolVersionBegin)}; }
-    std::experimental::string_view getHeaderFields() { return {headerFieldsBegin, static_cast<size_t>(headerFieldsEnd - headerFieldsBegin)}; }
+    std::experimental::string_view getMethod() const noexcept { return {methodBegin, static_cast<size_t>(methodEnd - methodBegin)}; }
+    std::experimental::string_view getUri() const noexcept { return {uriBegin, static_cast<size_t>(uriEnd - uriBegin)}; }
+    std::experimental::string_view getProtocolVersion() const noexcept { return {protocolVersionBegin, static_cast<size_t>(protocolVersionEnd - protocolVersionBegin)}; }
+    std::experimental::string_view getHeaderFields() const noexcept { return {headerFieldsBegin, static_cast<size_t>(headerFieldsEnd - headerFieldsBegin)}; }
 
 private:
     std::pair<Iterator, bool> methodMatcher(Iterator begin, Iterator end) noexcept {
@@ -45,7 +45,7 @@ private:
 
             if (c == ' ') {
                 methodEnd =  &*i;
-                currentMatcher = std::bind(&HttpHeaderParser::uriMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = std::bind(&HttpRequestHeaderParser::uriMatcher, this, std::placeholders::_1, std::placeholders::_2);
                 i++;
                 return uriMatcher(i, end);
             }
@@ -74,7 +74,7 @@ private:
 
             if (c == ' ') {
                 uriEnd =  &*i;
-                currentMatcher = std::bind(&HttpHeaderParser::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = std::bind(&HttpRequestHeaderParser::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
                 i++;
                 return protocolVersionMatcher(i, end);
             }
@@ -103,7 +103,7 @@ private:
 
             if ((previousChar == '\r') && (c == '\n')) {
                 protocolVersionEnd =  &*(i-1);
-                currentMatcher = std::bind(&HttpHeaderParser::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = std::bind(&HttpRequestHeaderParser::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
                 previousChar ='\n';
                 i++;
                 return headerFieldsMatcher(i, end);

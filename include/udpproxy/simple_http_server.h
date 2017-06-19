@@ -261,7 +261,7 @@ private:
         std::shared_ptr<std::vector<char, BufferAllocator>> buffer;
         boost::asio::system_timer timeoutTimer;
 
-        HttpHeaderParser<typename decltype(buffer)::element_type::const_iterator> httpHeaderParser;
+        HttpRequestHeaderParser<typename decltype(buffer)::element_type::const_iterator> httpHeaderParser;
         std::experimental::string_view httpMethod;
         std::experimental::string_view httpUri;
         std::experimental::string_view protocolVersion;
