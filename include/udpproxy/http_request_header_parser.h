@@ -9,15 +9,13 @@ template <typename Iterator>
 class HttpRequestHeaderParser {
 public:
     explicit HttpRequestHeaderParser(size_t maxHeaderSize) noexcept
-            : maxHeaderSize(maxHeaderSize),
-              currentMatcher(std::bind(&HttpRequestHeaderParser::methodMatcher, this, std::placeholders::_1, std::placeholders::_2)) {
+            : maxHeaderSize(maxHeaderSize), currentMatcher(&HttpRequestHeaderParser::methodMatcher) {
     }
 
     HttpRequestHeaderParser(const HttpRequestHeaderParser&) = delete;
-    HttpRequestHeaderParser(HttpRequestHeaderParser&&) = delete;
 
     std::pair<Iterator, bool> operator()(Iterator begin, Iterator end) noexcept {
-        return currentMatcher(begin, end);
+        return (this->*currentMatcher)(begin, end);
     }
 
     bool isSucceeded() { return success; }
@@ -45,7 +43,7 @@ private:
 
             if (c == ' ') {
                 methodEnd =  &*i;
-                currentMatcher = std::bind(&HttpRequestHeaderParser::uriMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = &HttpRequestHeaderParser::uriMatcher;
                 i++;
                 return uriMatcher(i, end);
             }
@@ -74,7 +72,7 @@ private:
 
             if (c == ' ') {
                 uriEnd =  &*i;
-                currentMatcher = std::bind(&HttpRequestHeaderParser::protocolVersionMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = &HttpRequestHeaderParser::protocolVersionMatcher;
                 i++;
                 return protocolVersionMatcher(i, end);
             }
@@ -103,7 +101,7 @@ private:
 
             if ((previousChar == '\r') && (c == '\n')) {
                 protocolVersionEnd =  &*(i-1);
-                currentMatcher = std::bind(&HttpRequestHeaderParser::headerFieldsMatcher, this, std::placeholders::_1, std::placeholders::_2);
+                currentMatcher = &HttpRequestHeaderParser::headerFieldsMatcher;
                 previousChar ='\n';
                 i++;
                 return headerFieldsMatcher(i, end);
@@ -153,7 +151,7 @@ private:
     }
 
     size_t maxHeaderSize;
-    std::function<std::pair<Iterator, bool>(Iterator begin, Iterator end) noexcept> currentMatcher;
+    std::pair<Iterator, bool> (HttpRequestHeaderParser::*currentMatcher)(Iterator begin, Iterator end) noexcept;
     size_t bytesRead = 0;
     char previousChar = 0;
     bool newLine = true;
